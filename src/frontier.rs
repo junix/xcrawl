@@ -12,17 +12,25 @@ pub struct FrontierEntry {
     pub depth: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct EnqueueResult {
+    pub enqueued: Vec<FrontierEntry>,
+    pub duplicates: usize,
+    pub rejected_capacity: usize,
+}
+
 #[async_trait]
 pub trait Frontier: Send + Sync {
-    async fn push(&self, entry: FrontierEntry) -> Result<()>;
-    async fn pop_batch(&self, limit: usize) -> Result<Vec<FrontierEntry>>;
-    async fn mark_seen(&self, key: &str) -> Result<bool>;
+    /// Atomically reserve deduplication keys and enqueue the accepted entries.
+    async fn enqueue_if_new(&self, entries: Vec<FrontierEntry>) -> Result<EnqueueResult>;
+    async fn pop(&self) -> Result<Option<FrontierEntry>>;
     async fn is_empty(&self) -> Result<bool>;
 }
 
 #[derive(Debug)]
 pub struct InMemoryFrontier {
     strategy: CrawlStrategy,
+    max_entries: usize,
     state: Mutex<FrontierState>,
 }
 
@@ -30,12 +38,14 @@ pub struct InMemoryFrontier {
 struct FrontierState {
     queue: VecDeque<FrontierEntry>,
     seen: HashSet<String>,
+    accepted_total: usize,
 }
 
 impl InMemoryFrontier {
-    pub fn new(strategy: CrawlStrategy) -> Self {
+    pub fn new(strategy: CrawlStrategy, max_entries: usize) -> Self {
         Self {
             strategy,
+            max_entries,
             state: Mutex::new(FrontierState::default()),
         }
     }
@@ -49,29 +59,33 @@ impl InMemoryFrontier {
 
 #[async_trait]
 impl Frontier for InMemoryFrontier {
-    async fn push(&self, entry: FrontierEntry) -> Result<()> {
-        self.lock()?.queue.push_back(entry);
-        Ok(())
-    }
-
-    async fn pop_batch(&self, limit: usize) -> Result<Vec<FrontierEntry>> {
+    async fn enqueue_if_new(&self, entries: Vec<FrontierEntry>) -> Result<EnqueueResult> {
         let mut state = self.lock()?;
-        let mut entries = Vec::with_capacity(limit.min(state.queue.len()));
-        for _ in 0..limit {
-            let entry = match self.strategy {
-                CrawlStrategy::BreadthFirst => state.queue.pop_front(),
-                CrawlStrategy::DepthFirst => state.queue.pop_back(),
-            };
-            match entry {
-                Some(entry) => entries.push(entry),
-                None => break,
+        let mut result = EnqueueResult::default();
+        for entry in entries {
+            let key = normalize_url(&entry.url);
+            if state.seen.contains(&key) {
+                result.duplicates += 1;
+                continue;
             }
+            if state.accepted_total >= self.max_entries {
+                result.rejected_capacity += 1;
+                continue;
+            }
+            state.seen.insert(key);
+            state.accepted_total += 1;
+            state.queue.push_back(entry.clone());
+            result.enqueued.push(entry);
         }
-        Ok(entries)
+        Ok(result)
     }
 
-    async fn mark_seen(&self, key: &str) -> Result<bool> {
-        Ok(self.lock()?.seen.insert(key.to_string()))
+    async fn pop(&self) -> Result<Option<FrontierEntry>> {
+        let mut state = self.lock()?;
+        Ok(match self.strategy {
+            CrawlStrategy::BreadthFirst => state.queue.pop_front(),
+            CrawlStrategy::DepthFirst => state.queue.pop_back(),
+        })
     }
 
     async fn is_empty(&self) -> Result<bool> {
@@ -79,27 +93,45 @@ impl Frontier for InMemoryFrontier {
     }
 }
 
+pub(crate) fn normalize_url(url: &Url) -> String {
+    let mut url = url.clone();
+    url.set_fragment(None);
+    // `url` already canonicalizes scheme/host case and default syntax. Keep
+    // query ordering because changing it can change resource identity.
+    url.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn frontier_order_and_seen_state_are_explicit() {
-        let frontier = InMemoryFrontier::new(CrawlStrategy::BreadthFirst);
-        assert!(frontier.mark_seen("a").await.unwrap());
-        assert!(!frontier.mark_seen("a").await.unwrap());
-        for raw in ["https://example.test/a", "https://example.test/b"] {
-            frontier
-                .push(FrontierEntry {
-                    url: Url::parse(raw).unwrap(),
-                    depth: 0,
-                })
-                .await
-                .unwrap();
-        }
-        let batch = frontier.pop_batch(2).await.unwrap();
-        assert_eq!(batch[0].url.path(), "/a");
-        assert_eq!(batch[1].url.path(), "/b");
+    async fn enqueue_and_seen_reservation_are_atomic() {
+        let frontier = InMemoryFrontier::new(CrawlStrategy::BreadthFirst, 2);
+        let entry = FrontierEntry {
+            url: Url::parse("https://example.test/a#fragment").unwrap(),
+            depth: 0,
+        };
+        let first = frontier.enqueue_if_new(vec![entry.clone()]).await.unwrap();
+        assert_eq!(first.enqueued.len(), 1);
+        let duplicate = frontier.enqueue_if_new(vec![entry]).await.unwrap();
+        assert_eq!(duplicate.duplicates, 1);
+        assert_eq!(frontier.pop().await.unwrap().unwrap().url.path(), "/a");
         assert!(frontier.is_empty().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn capacity_bounds_seen_and_queue_state() {
+        let frontier = InMemoryFrontier::new(CrawlStrategy::BreadthFirst, 1);
+        let entries = ["a", "b"]
+            .into_iter()
+            .map(|path| FrontierEntry {
+                url: Url::parse(&format!("https://example.test/{path}")).unwrap(),
+                depth: 0,
+            })
+            .collect();
+        let result = frontier.enqueue_if_new(entries).await.unwrap();
+        assert_eq!(result.enqueued.len(), 1);
+        assert_eq!(result.rejected_capacity, 1);
     }
 }

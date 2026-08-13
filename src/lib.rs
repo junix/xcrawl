@@ -4,6 +4,8 @@
 //! then passes the immutable response snapshot to `readabilities-rs` for
 //! decoding, full-page link discovery, metadata, and article extraction.
 
+mod analyzer;
+mod budget;
 mod config;
 mod crawler;
 mod error;
@@ -13,12 +15,22 @@ mod model;
 mod robots;
 mod throttle;
 
-pub use config::{CrawlConfig, CrawlStrategy};
+pub use analyzer::{PageAnalyzer, PageInput, ReadabilitiesAnalyzer};
+pub use config::{
+    CrawlConfig, CrawlStrategy, NetworkPolicy, OutputPolicy, PathMatchMode, PortPolicy,
+    RedirectPolicy, ResourceLimits, RetryPolicy, RobotsPolicy, ScopeBoundary, ScopePolicy,
+    TraversalPolicy,
+};
 pub use crawler::Crawler;
 pub use error::{CrawlError, Result};
-pub use frontier::{Frontier, FrontierEntry, InMemoryFrontier};
-pub use model::{CrawlEvent, CrawlFailure, CrawlPage, CrawlReport, CrawlStats};
-pub use robots::RobotsRules;
+pub use frontier::{EnqueueResult, Frontier, FrontierEntry, InMemoryFrontier};
+pub use model::{
+    AnalysisError, AnalysisWarning, AnalyzedArticle, AnalyzedLink, ArticleMetadata,
+    ArticleProvenance, ArticleSignals, CrawlEvent, CrawlFailure, CrawlFailureDetail, CrawlOutcome,
+    CrawlPage, CrawlRecord, CrawlReport, CrawlSink, CrawlSinkError, CrawlStats, CrawlSummary,
+    FailureKind, NullCrawlSink, PageAnalysis, PageRobots, RequestKind, RobotsDecision,
+};
+pub use robots::{RobotsRules, RobotsState};
 
 /// Library version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

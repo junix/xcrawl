@@ -1,115 +1,134 @@
 # xcrawl
 
-`xcrawl` is a bounded native Rust web crawler. It owns traversal and HTTP
-acquisition while [`readabilities-rs`](../readabilities/readabilities-rs)
-owns page decoding, full-document link discovery, metadata, readability
-selection, sanitization, and rendering.
+`xcrawl` is a policy-enforced, bounded Rust crawler for static HTTP(S) pages.
+Traversal and acquisition live here; page decoding, link discovery, metadata,
+and readability extraction are supplied by the default `ReadabilitiesAnalyzer`.
 
-Each URL is fetched exactly once. The immutable response is passed across the
-explicit `PageSnapshot -> PageAnalysis` contract, so the crawler never calls
-`readabilities-rs::read_url` and never discovers links from already-pruned
-article HTML.
+## Safety model
 
-## Current runtime
+The policy boundary is one actual HTTP attempt. Before every page, redirect,
+retry, or robots request, the runtime:
 
-- In-memory BFS or DFS frontier with normalized URL deduplication
-- Bounded depth, page count, concurrency, response bytes, retries, redirects,
-  and links per page
-- Same-domain, subdomain, include-prefix, and exclude-prefix scope policies
-- Per-domain delay, `Crawl-delay`, `Request-rate`, and adaptive 429 backoff
-- robots.txt allow/disallow with longest-match, `*`, and `$` semantics
-- Page and link `nofollow` handling
-- DNS validation and address pinning with private-network SSRF denial
-- IPv4-mapped IPv6 and NAT64 SSRF defense
-- JSON CLI output containing pages, article outcomes, links, failures, events,
-  and crawl statistics
+1. validates the URL, port, crawl scope, and URL-length budget;
+2. reserves the global request/origin budget;
+3. obtains the exact origin's rate and in-flight permit;
+4. resolves through a shared timeout-bounded resolver and rejects denied CIDRs;
+5. sends exactly one HTTP request and charges streamed bytes to the crawl;
+6. records status, `Retry-After`, timing, and response bytes.
 
-Browser rendering, WAF bypass, distributed persistence, document downloads,
-REST/MCP bindings, and LLM extraction are intentionally outside the initial
-runtime. See [known divergences](alignment/known-divergences.md).
+Redirect targets repeat the page-scope and robots checks before being requested.
+Retries repeat the origin-scheduler acquisition. The default redirect policy is
+`within_crawl_scope`, HTTPS downgrades are denied, the default scope is the
+seed's exact origin, only ports 80 and 443 are enabled, and IANA non-global
+address classes are denied.
+
+Robots handling follows RFC 9309's access outcomes:
+
+- a usable 2xx response applies its parsed rules;
+- 4xx means unavailable and permits crawling;
+- network errors and 5xx mean unreachable and disallow crawling.
+
+Matching combines repeated product-token groups, normalizes percent-encoded
+octets, supports `*` and `$`, and ignores blank/comment-only lines without
+terminating a group. Remote crawl delays are parsed fallibly and capped at 60
+seconds. The configured origin delay always remains a floor.
+
+## Bounded work
+
+Independent limits cover logical pages, HTTP attempts, response bytes, total
+download bytes, unique origins, frontier entries, URL length, crawl duration,
+attempt duration, robots size, reported links, and output bytes. Page analysis
+runs on Tokio's blocking pool and receives the response body by move rather than
+clone. The scheduler refills each free slot as soon as a page completes.
 
 ## CLI
+
+JSON Lines is the default so page, failure, request, robots, and final summary
+records can be consumed without collecting the crawl in memory:
 
 ```sh
 xcrawl https://example.com \
   --max-pages 100 \
   --max-depth 2 \
   --concurrency 8 \
-  --delay 500ms \
-  --timeout 20s \
-  --max-download-bytes 4MiB
+  --max-http-requests 1000 \
+  --max-total-download-bytes 128MiB \
+  --max-crawl-duration 10m
 ```
 
-The single command exposes the complete `CrawlConfig` policy:
+Use `--format json` for a bounded collected report. Query values are redacted
+from reports by default; `--include-query-values` explicitly disables that
+protection. `--dry-run` validates the complete grouped policy without touching
+the network.
 
-| Group | Flags |
+Important policy flags include:
+
+| Policy | Flags |
 |---|---|
-| Traversal | `--max-pages`, `--max-depth`, `--concurrency`, `--max-links-per-page`, `--strategy bfs\|dfs` |
-| Scope | `--allow-cross-domain`, `--allow-subdomains`, repeatable `--include-path-prefix` and `--exclude-path-prefix` |
-| Politeness | `--follow-nofollow`, `--ignore-robots`, `--delay 250ms` |
-| Network | `--timeout 30s`, `--max-download-bytes 8MiB`, `--max-redirects`, `--max-retries`, `--deny-cross-origin-redirects`, `--allow-private-networks`, `--user-agent` |
-| Automation | `--dry-run`, `--compact`, `-v`/`-vv` |
+| Traversal | `--max-pages`, `--max-depth`, `--concurrency`, `--max-origin-in-flight` |
+| Links | `--max-links-to-analyze`, `--max-links-to-enqueue`, `--max-links-to-report` |
+| Scope | `--domain-scope`, `--allow-cross-domain`, `--redirect-policy`, `--allow-https-downgrade` |
+| Robots | `--ignore-robots`, `--max-robots-delay`, `--max-robots-bytes`, `--max-robots-redirects` |
+| Retry | `--max-retries`, `--retry-base-delay`, `--retry-max-delay`, `--ignore-retry-after` |
+| Network | `--dns-timeout`, `--timeout`, `--allow-private-networks`, `--allow-nonstandard-ports` |
+| Global limits | `--max-http-requests`, `--max-total-download-bytes`, `--max-unique-origins`, `--max-frontier-entries`, `--max-url-length`, `--max-crawl-duration`, `--max-report-bytes` |
+| Outcome | `--allow-partial`, `--fail-on-any-error` |
 
-Durations accept `ms`, `s`, and `m`. Byte limits accept raw bytes or
-`KB`/`KiB`, `MB`/`MiB`, and `GB`/`GiB`. `--dry-run` performs URL and policy
-validation and prints the effective configuration without touching the
-network:
+Exit codes are stable:
 
-```sh
-xcrawl https://example.com \
-  --include-path-prefix /docs \
-  --exclude-path-prefix /docs/private \
-  --dry-run --compact
-```
+- `0`: complete, explicitly allowed partial, or broken-pipe cancellation;
+- `1`: partial, deadline, output-budget, or fatal failure;
+- `2`: command-line usage error;
+- `3`: invalid URL or crawl policy;
+- `4`: seed/network failure.
 
-stdout contains only the JSON crawl report (or dry-run plan); diagnostics go
-to stderr. Exit codes are `0` success, `1` crawl/output failure, `2` command
-usage, `3` invalid crawl policy, and `4` denied or unreachable network.
-
-Private and loopback networks are denied by default. Local integration tests
-may opt in explicitly:
+Private test services normally need both explicit opt-ins:
 
 ```sh
-xcrawl http://127.0.0.1:8000 --allow-private-networks
+xcrawl http://127.0.0.1:8000 \
+  --allow-private-networks \
+  --allow-nonstandard-ports
 ```
 
 ## Library
+
+The 0.2 API groups policy by responsibility and exposes crawler-owned analysis
+DTOs. The default adapter is replaceable through `PageAnalyzer`.
 
 ```rust,no_run
 use url::Url;
 use xcrawl::{CrawlConfig, Crawler};
 
 # async fn example() -> xcrawl::Result<()> {
-let crawler = Crawler::new(CrawlConfig {
-    max_pages: 50,
-    max_depth: 2,
-    ..CrawlConfig::default()
-})?;
-let report = crawler
+let mut config = CrawlConfig::default();
+config.limits.max_pages = 50;
+config.traversal.max_depth = 2;
+
+let report = Crawler::new(config)?
     .crawl(&Url::parse("https://example.com").unwrap())
     .await?;
 
-for page in report.pages {
-    if let Some(article) = page.article {
-        println!("{}: {} words", page.final_url, article.word_count);
-    }
-}
+println!("{:?}: {} pages", report.outcome, report.stats.pages_crawled);
 # Ok(())
 # }
 ```
 
-Use `Crawler::with_reader(config, reader)` when page extraction needs custom
-`readabilities-rs` options or site profiles. Crawl policy remains in
-`CrawlConfig`; page-understanding policy remains in `Reader`.
+`crawl_with_sink` streams `CrawlRecord` values without retaining pages or
+events. `crawl_collect_with_frontier` injects an alternate `Frontier`; its
+`enqueue_if_new` contract makes deduplication reservation and enqueue atomic.
+
+Browser rendering, WAF bypass, distributed persistence, document downloads,
+REST/MCP bindings, and LLM extraction remain outside this runtime.
 
 ## Development
 
 ```sh
 just check-all
-just install
 ```
+
+CI checks formatting, Clippy, tests, and builds on the declared Rust 1.85 MSRV.
 
 ## License
 
-MIT. Portions adapted from Crawlberg are documented in
+MIT. Adapted portions are documented in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

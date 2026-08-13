@@ -1,6 +1,6 @@
 [package]
 name = "xcrawl"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
@@ -11,17 +11,20 @@ repository = "https://github.com/junix/xcrawl"
 async-trait = "0.1.89"
 clap = { version = "4.6.0", features = ["derive"] }
 futures-util = "0.3.31"
+httpdate = "1.0.3"
+ipnet = "2.11.0"
 readabilities-rs = { path = "../readabilities/readabilities-rs", default-features = false, features = ["charset"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["brotli", "deflate", "gzip", "rustls", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 thiserror = "2.0.18"
-tokio = { version = "1.48.0", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.48.0", features = ["macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 url = { version = "2.5.8", features = ["serde"] }
 
 [dev-dependencies]
+proptest = "1.9.0"
 
 [lints.rust]
 unsafe_code = "forbid"
