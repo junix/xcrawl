@@ -1,0 +1,11 @@
+[package]
+name = "xcrawl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A Rust library"
+repository = "https://github.com/junix/xcrawl"
+
+[dependencies]
+
+[dev-dependencies]
