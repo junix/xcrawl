@@ -1,0 +1,32 @@
+upstream:
+  path: /Users/junix/crawlberg
+  branch: main
+
+baseline: "e855adfa5a22bef61ba747f3b56ad4fb27fe4b5b"
+
+scope_map:
+  "crates/crawlberg/src/engine/crawl_loop.rs":
+    - src/crawler.rs
+  "crates/crawlberg/src/defaults/frontier.rs":
+    - src/frontier.rs
+  "crates/crawlberg/src/defaults/rate_limiter.rs":
+    - src/throttle.rs
+  "crates/crawlberg/src/net/ssrf.rs":
+    - src/fetch.rs
+  "crates/crawlberg/src/html":
+    - ../readabilities/readabilities-rs/src/page.rs
+
+scope_filter:
+  include:
+    - crates/crawlberg/src/engine
+    - crates/crawlberg/src/defaults/frontier.rs
+    - crates/crawlberg/src/defaults/rate_limiter.rs
+    - crates/crawlberg/src/net/ssrf.rs
+  exclude:
+    - crates/crawlberg/src/api
+    - crates/crawlberg/src/mcp
+    - crates/crawlberg/src/interact
+    - crates/crawlberg-browser
+    - crates/crawlberg-bypass
+    - crates/crawlberg-ffi
+    - packages

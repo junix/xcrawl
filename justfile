@@ -39,8 +39,12 @@ clippy:
 clippy-fix:
     cargo clippy --fix --allow-dirty --allow-staged
 
-# Run all checks
-check-all: fmt-check clippy test
+# Run the complete release gate
+check-all:
+    cargo fmt --all -- --check
+    cargo clippy --locked --all-targets -- -D warnings
+    cargo test --locked --all-targets
+    cargo build --locked
 
 # Clean build artifacts
 clean:
