@@ -43,7 +43,7 @@ impl Crawler {
 
     pub async fn crawl(&self, seed: &Url) -> Result<CrawlReport> {
         self.config.validate()?;
-        validate_seed(seed)?;
+        Self::validate_seed(seed)?;
         let started = Instant::now();
         let seed_host = seed
             .host_str()
@@ -133,6 +133,11 @@ impl Crawler {
             stats: report.stats.clone(),
         });
         Ok(report)
+    }
+
+    /// Validate a seed without making a network request.
+    pub fn validate_seed(seed: &Url) -> Result<()> {
+        validate_seed(seed)
     }
 
     async fn process_page(

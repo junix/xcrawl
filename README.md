@@ -31,17 +31,46 @@ runtime. See [known divergences](alignment/known-divergences.md).
 ## CLI
 
 ```sh
-cargo run -- https://example.com \
+xcrawl https://example.com \
   --max-pages 100 \
   --max-depth 2 \
-  --concurrency 8
+  --concurrency 8 \
+  --delay 500ms \
+  --timeout 20s \
+  --max-download-bytes 4MiB
 ```
+
+The single command exposes the complete `CrawlConfig` policy:
+
+| Group | Flags |
+|---|---|
+| Traversal | `--max-pages`, `--max-depth`, `--concurrency`, `--max-links-per-page`, `--strategy bfs\|dfs` |
+| Scope | `--allow-cross-domain`, `--allow-subdomains`, repeatable `--include-path-prefix` and `--exclude-path-prefix` |
+| Politeness | `--follow-nofollow`, `--ignore-robots`, `--delay 250ms` |
+| Network | `--timeout 30s`, `--max-download-bytes 8MiB`, `--max-redirects`, `--max-retries`, `--deny-cross-origin-redirects`, `--allow-private-networks`, `--user-agent` |
+| Automation | `--dry-run`, `--compact`, `-v`/`-vv` |
+
+Durations accept `ms`, `s`, and `m`. Byte limits accept raw bytes or
+`KB`/`KiB`, `MB`/`MiB`, and `GB`/`GiB`. `--dry-run` performs URL and policy
+validation and prints the effective configuration without touching the
+network:
+
+```sh
+xcrawl https://example.com \
+  --include-path-prefix /docs \
+  --exclude-path-prefix /docs/private \
+  --dry-run --compact
+```
+
+stdout contains only the JSON crawl report (or dry-run plan); diagnostics go
+to stderr. Exit codes are `0` success, `1` crawl/output failure, `2` command
+usage, `3` invalid crawl policy, and `4` denied or unreachable network.
 
 Private and loopback networks are denied by default. Local integration tests
 may opt in explicitly:
 
 ```sh
-cargo run -- http://127.0.0.1:8000 --allow-private-networks
+xcrawl http://127.0.0.1:8000 --allow-private-networks
 ```
 
 ## Library
@@ -77,6 +106,7 @@ Use `Crawler::with_reader(config, reader)` when page extraction needs custom
 
 ```sh
 just check-all
+just install
 ```
 
 ## License

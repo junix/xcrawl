@@ -78,6 +78,16 @@ impl CrawlConfig {
                 "user_agent must not be empty".to_string(),
             ));
         }
+        if self
+            .include_path_prefixes
+            .iter()
+            .chain(&self.exclude_path_prefixes)
+            .any(|prefix| !prefix.starts_with('/'))
+        {
+            return Err(CrawlError::InvalidConfig(
+                "include and exclude path prefixes must begin with '/'".to_string(),
+            ));
+        }
         Ok(())
     }
 }

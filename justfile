@@ -11,6 +11,29 @@ build:
 build-release:
     cargo build --release
 
+# Install the release binary into the shared per-platform bin directory.
+install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$(uname -s)" in
+      Darwin) os_name=macos ;;
+      Linux) os_name=linux ;;
+      *) echo "unsupported OS" >&2; exit 1 ;;
+    esac
+    case "$(uname -m)" in
+      arm64|aarch64) arch_name=arm64 ;;
+      x86_64|amd64) arch_name=x86 ;;
+      *) echo "unsupported architecture" >&2; exit 1 ;;
+    esac
+    install_dir="${SYNC_BIN_DIR:-${HOME}/sync/${os_name}-${arch_name}-bin}"
+    cargo build --release --locked
+    mkdir -p "$install_dir"
+    cp target/release/xcrawl "$install_dir/xcrawl"
+    if [[ "$os_name" == "macos" ]]; then
+      codesign --force --sign - "$install_dir/xcrawl"
+    fi
+    echo "Installed $install_dir/xcrawl"
+
 # Run tests
 test:
     cargo test
