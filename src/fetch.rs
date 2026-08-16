@@ -13,6 +13,7 @@ use url::{Host, Url};
 
 use crate::budget::CrawlBudget;
 use crate::config::NetworkPolicy;
+use crate::model::RequestKind;
 use crate::{CrawlConfig, CrawlError, Result};
 
 const DEFAULT_DENIED_CIDRS: &[&str] = &[
@@ -109,6 +110,7 @@ impl OneHopTransport {
     pub(crate) async fn send_one_hop(
         &self,
         url: &Url,
+        kind: RequestKind,
         max_body_bytes: usize,
         budget: &CrawlBudget,
     ) -> Result<HopOutcome> {
@@ -145,6 +147,22 @@ impl OneHopTransport {
                 body: Vec::new(),
             }));
         }
+        // Content-type preflight (dsh web-fetch-http provider.ts readBody:
+        // classify before reading a single body byte). A page body we would
+        // refuse to decode anyway — images, media, binaries, or a server that
+        // omits Content-Type entirely — is skipped at zero download cost; the
+        // empty body flows on to the analyzer, which reports `unsupported`.
+        // Robots fetches are control-plane: their rules must parse regardless
+        // of the advertised type, so they are exempt.
+        if kind == RequestKind::Page && !is_decodable_content_type(headers.content_type.as_deref())
+        {
+            return Ok(HopOutcome::Response(HopResponse {
+                url: url.clone(),
+                status,
+                headers,
+                body: Vec::new(),
+            }));
+        }
         if response
             .content_length()
             .is_some_and(|length| length > max_body_bytes as u64)
@@ -174,6 +192,32 @@ impl OneHopTransport {
             body,
         }))
     }
+}
+
+/// Port of dsh `web-fetch-http/src/policy.ts` classifyContentType: HTML and
+/// XHTML, every `text/*` type, and the JSON/XML application families are
+/// decodable document bodies; anything else — including a missing
+/// Content-Type header — is not worth a single downloaded byte.
+fn is_decodable_content_type(content_type: Option<&str>) -> bool {
+    let Some(raw) = content_type else {
+        return false;
+    };
+    let mime = raw
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if mime == "text/html" || mime == "application/xhtml+xml" {
+        return true;
+    }
+    if mime.starts_with("text/") {
+        return true;
+    }
+    mime == "application/json"
+        || mime == "application/xml"
+        || mime.ends_with("+json")
+        || mime.ends_with("+xml")
 }
 
 #[derive(Debug)]
@@ -478,11 +522,9 @@ mod tests {
         ] {
             assert!(guard().validate_ip(raw.parse().unwrap()).is_err(), "{raw}");
         }
-        assert!(
-            guard()
-                .validate_ip("2606:4700:4700::1111".parse().unwrap())
-                .is_ok()
-        );
+        assert!(guard()
+            .validate_ip("2606:4700:4700::1111".parse().unwrap())
+            .is_ok());
     }
 
     #[test]
@@ -497,5 +539,45 @@ mod tests {
     fn only_actual_redirect_statuses_are_followed() {
         assert!(is_followed_redirect(301));
         assert!(!is_followed_redirect(304));
+    }
+
+    #[test]
+    fn decodable_document_families_pass_the_content_type_preflight() {
+        for value in [
+            "text/html",
+            "TEXT/HTML; charset=utf-8",
+            "  application/xhtml+xml  ",
+            "text/plain; charset=iso-8859-1",
+            "text/csv",
+            "application/json",
+            "application/xml",
+            "application/vnd.api+json",
+            "image/svg+xml",
+        ] {
+            assert!(
+                is_decodable_content_type(Some(value)),
+                "{value} must be decodable"
+            );
+        }
+    }
+
+    #[test]
+    fn binary_and_missing_content_types_fail_the_preflight() {
+        for value in [
+            "application/pdf",
+            "image/png",
+            "image/jpeg",
+            "video/mp4",
+            "application/octet-stream",
+            "application/zip",
+            "font/woff2",
+            "",
+        ] {
+            assert!(
+                !is_decodable_content_type(Some(value)),
+                "{value} must be rejected"
+            );
+        }
+        assert!(!is_decodable_content_type(None));
     }
 }

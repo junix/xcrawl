@@ -388,3 +388,82 @@ async fn reported_links_are_bounded_and_total_is_preserved() {
     assert_eq!(report.pages[0].links.len(), 5);
     assert!(report.pages[0].links_truncated);
 }
+
+#[tokio::test]
+async fn undecodable_page_body_is_not_downloaded() {
+    let body = format!("%PDF-1.7\n{}", "x".repeat(64 * 1024));
+    let (seed, server) = serve(Arc::new(move |_| Reply {
+        status: "200 OK",
+        headers: vec![("Content-Type".into(), "application/pdf".into())],
+        body: body.clone(),
+        delay: Duration::ZERO,
+        close_without_response: false,
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    assert_eq!(report.pages.len(), 1);
+    let page = &report.pages[0];
+    assert_eq!(page.status, 200);
+    assert_eq!(page.content_type.as_deref(), Some("application/pdf"));
+    assert_eq!(page.body_bytes, 0);
+    assert_eq!(
+        page.article_error.as_ref().expect("unsupported body").kind,
+        "unsupported"
+    );
+    // Zero download-side proof: 64 KiB of PDF bytes stayed on the wire.
+    assert_eq!(report.stats.downloaded_bytes, 0);
+}
+
+#[tokio::test]
+async fn missing_content_type_page_body_is_not_downloaded() {
+    let (seed, server) = serve(Arc::new(move |_| Reply {
+        status: "200 OK",
+        headers: Vec::new(),
+        body: "<html><body>mystery bytes</body></html>".to_string(),
+        delay: Duration::ZERO,
+        close_without_response: false,
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    let page = &report.pages[0];
+    assert_eq!(page.status, 200);
+    assert!(page.content_type.is_none());
+    assert_eq!(page.body_bytes, 0);
+    assert_eq!(
+        page.article_error.as_ref().expect("unsupported body").kind,
+        "unsupported"
+    );
+    assert_eq!(report.stats.downloaded_bytes, 0);
+}
+
+#[tokio::test]
+async fn decodable_text_page_body_still_downloads() {
+    let (seed, server) = serve(Arc::new(move |_| Reply {
+        status: "200 OK",
+        headers: vec![("Content-Type".into(), "text/plain".into())],
+        body: "plain text notes that must still be downloaded".to_string(),
+        delay: Duration::ZERO,
+        close_without_response: false,
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    let page = &report.pages[0];
+    assert_eq!(page.content_type.as_deref(), Some("text/plain"));
+    assert!(page.body_bytes > 0);
+    assert_eq!(report.stats.downloaded_bytes, page.body_bytes);
+}

@@ -12,7 +12,7 @@ use url::Url;
 
 use crate::analyzer::{PageAnalyzer, PageInput, ReadabilitiesAnalyzer};
 use crate::budget::CrawlBudget;
-use crate::fetch::{HopOutcome, HopResponse, OneHopTransport, origin_key, safe_url, validate_url};
+use crate::fetch::{origin_key, safe_url, validate_url, HopOutcome, HopResponse, OneHopTransport};
 use crate::frontier::normalize_url;
 use crate::robots::{RobotsRules, RobotsState};
 use crate::throttle::OriginScheduler;
@@ -867,7 +867,7 @@ impl CrawlRuntime {
             let result = tokio::time::timeout(
                 timeout,
                 self.transport
-                    .send_one_hop(url, max_body_bytes, &self.budget),
+                    .send_one_hop(url, kind, max_body_bytes, &self.budget),
             )
             .await
             .map_err(|_| CrawlError::AttemptTimeout)
