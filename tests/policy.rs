@@ -467,3 +467,66 @@ async fn decodable_text_page_body_still_downloads() {
     assert!(page.body_bytes > 0);
     assert_eq!(report.stats.downloaded_bytes, page.body_bytes);
 }
+
+#[tokio::test]
+async fn cross_origin_redirect_denial_names_target_and_action() {
+    // Second origin so the redirect genuinely changes origin.
+    let (other, other_server) = serve(Arc::new(|_| Reply::ok("<article>other</article>"))).await;
+    let (seed, server) = serve(Arc::new({
+        let other = other.clone();
+        move |_| Reply {
+            status: "302 Found",
+            headers: vec![("Location".into(), other.to_string())],
+            body: String::new(),
+            delay: Duration::ZERO,
+            close_without_response: false,
+        }
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.scope.redirect_policy = RedirectPolicy::SameOrigin;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+    other_server.abort();
+    assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
+    let failure = &report.failures[0].error;
+    assert_eq!(failure.kind, xcrawl::FailureKind::RedirectDenied);
+    // The denial must be observable: which origin was targeted and what to
+    // do about it (dsh web-fetch-http provider.ts:80-92 wording). The
+    // `CrawlError::RedirectDenied` Display prefixes "redirect denied: ".
+    let other_origin = other.as_str().trim_end_matches('/');
+    assert!(
+        failure.message.contains(&format!(
+            "cross-origin redirect to {other_origin} is not followed automatically; retry against that URL directly"
+        )),
+        "got: {}",
+        failure.message
+    );
+}
+
+#[tokio::test]
+async fn redirect_budget_message_names_the_hop_limit() {
+    let (seed, server) = serve(Arc::new(|path| Reply {
+        status: "302 Found",
+        headers: vec![(
+            "Location".into(),
+            if path == "/a" { "/b" } else { "/a" }.into(),
+        )],
+        body: String::new(),
+        delay: Duration::ZERO,
+        close_without_response: false,
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.scope.max_redirects = 2;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+    assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
+    let failure = &report.failures[0].error;
+    assert_eq!(failure.kind, xcrawl::FailureKind::RedirectBudget);
+    // The concrete hop cap, not an anonymous "budget exhausted"
+    // (dsh web-fetch-http provider.ts:64-67 wording).
+    assert_eq!(failure.message, "exceeded the maximum of 2 redirects");
+}

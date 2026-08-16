@@ -20,8 +20,8 @@ pub enum CrawlError {
     RobotsDenied(String),
     #[error("redirect denied: {0}")]
     RedirectDenied(String),
-    #[error("redirect budget exhausted")]
-    RedirectBudget,
+    #[error("exceeded the maximum of {limit} redirects")]
+    RedirectBudget { limit: u8 },
     #[error("resource budget exhausted: {resource} limit {limit}")]
     ResourceBudget {
         resource: &'static str,

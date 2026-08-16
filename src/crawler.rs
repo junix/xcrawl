@@ -631,7 +631,9 @@ impl CrawlRuntime {
                     if redirects.len() >= usize::from(self.config.scope.max_redirects) {
                         return Err(TaskFailure {
                             entry: entry.clone(),
-                            error: CrawlError::RedirectBudget,
+                            error: CrawlError::RedirectBudget {
+                                limit: self.config.scope.max_redirects,
+                            },
                             attempts,
                             redirect_chain: redirects,
                             events,
@@ -682,7 +684,10 @@ impl CrawlRuntime {
                 )))
             }
             RedirectPolicy::SameOrigin if origin_key(url) != initial_origin => Err(
-                CrawlError::RedirectDenied("target changed origin".to_string()),
+                CrawlError::RedirectDenied(format!(
+                    "cross-origin redirect to {} is not followed automatically; retry against that URL directly",
+                    origin_key(url)
+                )),
             ),
             _ => Ok(()),
         }
@@ -790,7 +795,10 @@ impl CrawlRuntime {
                     if redirects >= self.config.robots.max_redirects {
                         break RobotsState::UnreachableDisallow {
                             status: None,
-                            error: CrawlError::RedirectBudget.to_string(),
+                            error: CrawlError::RedirectBudget {
+                                limit: self.config.robots.max_redirects,
+                            }
+                            .to_string(),
                         };
                     }
                     let Ok(next) = current.join(&location) else {
@@ -1005,7 +1013,7 @@ impl TaskFailure {
             CrawlError::AttemptTimeout => FailureKind::Timeout,
             CrawlError::RobotsDenied(_) => FailureKind::RobotsDenied,
             CrawlError::RedirectDenied(_) => FailureKind::RedirectDenied,
-            CrawlError::RedirectBudget => FailureKind::RedirectBudget,
+            CrawlError::RedirectBudget { .. } => FailureKind::RedirectBudget,
             CrawlError::ResourceBudget { .. } => FailureKind::ResourceBudget,
             CrawlError::DeadlineExceeded => FailureKind::Deadline,
             CrawlError::Cancelled => FailureKind::Cancelled,
