@@ -1,0 +1,257 @@
+{
+  "schema_version": "repository-architecture-infographic/v1",
+  "meta": {
+    "project": "xcrawl",
+    "snapshot": "65efd6166",
+    "generated": "2026-08-26",
+    "language": "zh-CN",
+    "audience": "新贡献者、架构评审者与下游集成方",
+    "thesis": "把仓库的真实入口、实现分区、可执行用法与验证证据放在一条可回查的阅读路径上。",
+    "canonical_source": "docs/infographics/architecture.svg"
+  },
+  "narrative": {
+    "reader_question": "xcrawl 的代码从哪里进入、由哪些分区构成、怎样运行并如何验证？",
+    "order": [
+      "项目指纹",
+      "架构地形",
+      "使用路径",
+      "规模与依赖",
+      "验证与溯源"
+    ],
+    "inference_policy": "文件、计数、命令与依赖是仓库事实；职责名称仅按路径命名归类，均显式标注为推断。"
+  },
+  "sources": {
+    "readme": "README.md",
+    "readme_excerpt": [
+      "xcrawl is a policy-enforced, bounded Rust crawler for static HTTP(S) pages. Traversal and acquisition live here; page decoding, link discovery, metadata, and readability extraction are supplied by the default ReadabilitiesAnalyzer.",
+      "The policy boundary is one actual HTTP attempt. Before every page, redirect, retry, or robots request, the runtime:"
+    ],
+    "manifests": [
+      "Cargo.toml",
+      "justfile"
+    ],
+    "tracked_file_formula": "git ls-files，排除构建/依赖目录",
+    "line_formula": "逐个已跟踪源码文件统计非空文本行；不等同于语句数或复杂度",
+    "component_formula": "按源码路径首个职责分区聚合；角色名由路径关键词推断",
+    "entrypoint_formula": "按常见入口文件名与 bin/cmd/cli/app 路径定位候选；路径存在是事实，入口职责仍需源码确认"
+  },
+  "facts": {
+    "description": "xcrawl is a policy-enforced, bounded Rust crawler for static HTTP(S) pages. Traversal and acquisition live here; page decoding, link discovery, metadata, and readability extraction are supplied by the default ReadabilitiesAnalyzer.",
+    "tracked_files": 26,
+    "source_files": 14,
+    "source_nonblank_lines": 4563,
+    "languages": [
+      {
+        "name": "Rust",
+        "files": 14,
+        "nonblank_lines": 4563,
+        "share": 1.0
+      }
+    ],
+    "entrypoints": [
+      "src/main.rs",
+      "tests/cli.rs",
+      "src/lib.rs"
+    ],
+    "components": [
+      {
+        "id": "component-1",
+        "label": "src/crawler",
+        "role": "实现分区",
+        "file_count": 1,
+        "nonblank_lines": 1204,
+        "examples": [
+          "src/crawler.rs"
+        ]
+      },
+      {
+        "id": "component-2",
+        "label": "src/main",
+        "role": "入口与编排",
+        "file_count": 1,
+        "nonblank_lines": 547,
+        "examples": [
+          "src/main.rs"
+        ]
+      },
+      {
+        "id": "component-3",
+        "label": "src/fetch",
+        "role": "实现分区",
+        "file_count": 1,
+        "nonblank_lines": 546,
+        "examples": [
+          "src/fetch.rs"
+        ]
+      },
+      {
+        "id": "component-4",
+        "label": "src/config",
+        "role": "实现分区",
+        "file_count": 1,
+        "nonblank_lines": 326,
+        "examples": [
+          "src/config.rs"
+        ]
+      },
+      {
+        "id": "component-5",
+        "label": "src/robots",
+        "role": "实现分区",
+        "file_count": 1,
+        "nonblank_lines": 310,
+        "examples": [
+          "src/robots.rs"
+        ]
+      },
+      {
+        "id": "component-6",
+        "label": "src/model",
+        "role": "核心语义",
+        "file_count": 1,
+        "nonblank_lines": 263,
+        "examples": [
+          "src/model.rs"
+        ]
+      },
+      {
+        "id": "component-7",
+        "label": "src/throttle",
+        "role": "实现分区",
+        "file_count": 1,
+        "nonblank_lines": 189,
+        "examples": [
+          "src/throttle.rs"
+        ]
+      }
+    ],
+    "static_edges": [
+      {
+        "from": "src/crawler",
+        "to": "src/fetch",
+        "evidence_files": 1,
+        "method": "静态导入/模块声明匹配"
+      },
+      {
+        "from": "src/crawler",
+        "to": "src/config",
+        "evidence_files": 1,
+        "method": "静态导入/模块声明匹配"
+      },
+      {
+        "from": "src/crawler",
+        "to": "src/robots",
+        "evidence_files": 1,
+        "method": "静态导入/模块声明匹配"
+      },
+      {
+        "from": "src/crawler",
+        "to": "src/throttle",
+        "evidence_files": 1,
+        "method": "静态导入/模块声明匹配"
+      },
+      {
+        "from": "src/fetch",
+        "to": "src/config",
+        "evidence_files": 1,
+        "method": "静态导入/模块声明匹配"
+      },
+      {
+        "from": "src/fetch",
+        "to": "src/model",
+        "evidence_files": 1,
+        "method": "静态导入/模块声明匹配"
+      }
+    ],
+    "dependencies": [
+      "async-trait",
+      "clap",
+      "futures-util",
+      "httpdate",
+      "ipnet",
+      "readabilities-rs",
+      "reqwest",
+      "serde",
+      "serde_json",
+      "thiserror",
+      "tokio",
+      "tracing",
+      "tracing-subscriber",
+      "url"
+    ],
+    "commands": [
+      "just build",
+      "just test",
+      "just install",
+      "just check",
+      "just default",
+      "just build-release",
+      "just test-verbose",
+      "xcrawl https://example.com \\"
+    ],
+    "test_files": 2,
+    "test_examples": [
+      "tests/cli.rs",
+      "tests/policy.rs"
+    ],
+    "manifest_count": 2,
+    "largest_files": [
+      {
+        "path": "src/crawler.rs",
+        "language": "Rust",
+        "lines": 1268,
+        "nonblank_lines": 1204,
+        "group": "src"
+      },
+      {
+        "path": "src/main.rs",
+        "language": "Rust",
+        "lines": 618,
+        "nonblank_lines": 547,
+        "group": "src"
+      },
+      {
+        "path": "src/fetch.rs",
+        "language": "Rust",
+        "lines": 583,
+        "nonblank_lines": 546,
+        "group": "src"
+      },
+      {
+        "path": "tests/policy.rs",
+        "language": "Rust",
+        "lines": 532,
+        "nonblank_lines": 507,
+        "group": "tests"
+      },
+      {
+        "path": "src/config.rs",
+        "language": "Rust",
+        "lines": 350,
+        "nonblank_lines": 326,
+        "group": "src"
+      },
+      {
+        "path": "src/robots.rs",
+        "language": "Rust",
+        "lines": 338,
+        "nonblank_lines": 310,
+        "group": "src"
+      },
+      {
+        "path": "src/model.rs",
+        "language": "Rust",
+        "lines": 288,
+        "nonblank_lines": 263,
+        "group": "src"
+      },
+      {
+        "path": "tests/cli.rs",
+        "language": "Rust",
+        "lines": 236,
+        "nonblank_lines": 224,
+        "group": "tests"
+      }
+    ]
+  }
+}
