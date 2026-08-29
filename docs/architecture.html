@@ -4,202 +4,1019 @@
 <script>document.documentElement.classList.add("js");window.__docReady=false;window.__docErrors=[];window.addEventListener("error",e=>window.__docErrors.push(String(e.message)));window.addEventListener("unhandledrejection",e=>window.__docErrors.push(String(e.reason)));</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>xcrawl 架构总览</title>
+<title>xcrawl · 架构总览</title>
 <script type="application/json" id="doc-meta">
 {
   "id": "architecture",
   "title": "xcrawl 架构总览",
   "status": "draft",
   "audience": "architects",
-  "last_updated": "2026-08-23",
+  "last_updated": "2026-08-26",
   "owners": [],
   "revisions": [
-    {
-      "date": "2026-08-23",
-      "reason": "首次生成"
-    }
+    { "date": "2026-08-23", "reason": "首次生成" },
+    { "date": "2026-08-26", "reason": "按 code2arch 规范全面重写：补充分层图、数据流、模块依赖、策略约束四张图，完善主走查与图解" }
   ]
 }
 </script>
 <style>
-:root{--paper:#fafbfc;--card:#ffffff;--ink:#171a1f;--muted:#626b78;--line:#d7dce3;--blue:#2563eb;--blue-ink:#1d4ed8;--blue-pale:#e8f0fe;--external:#eef1f5;--shadow:rgba(29,78,216,.06);--e-pen:linear(0,.028 10%,.104 20%,.216 30%,.352 40%,.5 50%,.648 60%,.784 70%,.896 80%,.972 90%,1)}
-*{box-sizing:border-box}
-html{background:var(--paper);color:var(--ink);scroll-behavior:smooth}
-body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;font-size:16px;line-height:1.8}
-main{width:min(960px,100%);margin:0 auto;padding:0 24px 64px}
-header{padding:96px 0 64px;border-bottom:1px solid var(--line)}
-h1{margin:0;font-size:2.5rem;line-height:1.2;letter-spacing:-.02em}
-h2{margin:0 0 24px;padding-top:16px;border-top:1px solid var(--line);font-size:1.5rem;line-height:1.35}
-h3{margin:24px 0 8px;font-size:1.15rem;line-height:1.5}
-p,ul,ol,dl{max-width:34em}
-section{padding-top:80px}
-.lede{margin:16px 0 24px;color:var(--muted);font-size:16px}
-.badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}
-.badge,.replay,.hint,figcaption,footer{font-size:14px;line-height:1.6}
-.badge{display:inline-block;padding:4px 10px;border:1px solid #b8cdf7;border-radius:999px;background:var(--blue-pale);color:var(--blue-ink)}
-.badge.inference{border-style:dashed}.badge.tbd{background:var(--external);border-color:#c9d1dc;color:#4f5b6a}
-.feature-list{padding-left:20px}.feature-list li{margin:12px 0}code{font-family:"SFMono-Regular",Consolas,monospace;color:var(--blue-ink)}
-dl{display:grid;grid-template-columns:120px 1fr;gap:8px 24px}dt{font-weight:650}dd{margin:0;color:var(--muted)}
-figure{margin:24px 0 8px;padding:24px;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 32px var(--shadow);overflow-x:auto}
-figure svg{display:block;width:100%;max-width:920px;min-width:920px;height:auto;margin:0 auto}
-figcaption{margin-top:16px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted)}
-.explain{max-width:34em;margin:8px 0 40px}.explain strong{color:var(--blue-ink)}
-.node{cursor:pointer;opacity:1;transition:opacity .2s ease}.js .anim .node{opacity:0}.js .anim.in-view .node{opacity:1;transition-delay:calc(var(--i)*120ms)}
-.edge{fill:none;stroke:#6f7b8b;stroke-width:1.5}.edge.inferred{stroke-dasharray:2 3}.edge.hl{stroke:var(--blue);stroke-width:2.5}.edge-label{fill:var(--muted);text-anchor:middle}
-.node rect{fill:var(--blue-pale);stroke:var(--blue);stroke-width:1.5}.node.external rect{fill:var(--external);stroke:#8491a3}.node text{fill:var(--ink);font-weight:600;text-anchor:middle;pointer-events:none}.node .sub{fill:var(--muted);font-weight:400}
-.hit{fill:transparent!important;stroke:none!important;pointer-events:all}svg.focus-mode .node{opacity:.5!important}svg.focus-mode .node.hl{opacity:1!important}
-.flow-dot{fill:var(--blue)}.flash{background:var(--blue-pale);box-shadow:-3px 0 0 var(--blue);transition:background .3s ease}
-.replay{margin-top:8px;padding:7px 14px;border:1px solid var(--blue);border-radius:8px;background:var(--card);color:var(--blue-ink);cursor:pointer}.replay:hover{background:var(--blue-pale)}
-.hint{margin:8px 0 0;color:var(--muted);font-variant-numeric:tabular-nums}
-a{color:var(--blue-ink)}a:hover{text-decoration-thickness:2px}:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
-footer{margin-top:96px;padding-top:24px;border-top:1px solid var(--line);color:var(--muted)}
-@media(max-width:600px){main{padding-inline:16px}header{padding-top:64px}section{padding-top:72px}dl{grid-template-columns:1fr;gap:4px}dd{margin-bottom:12px}}
-@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.js .anim .node{opacity:1;transition:none}.flow-dot{display:none}.flash{transition:none}}
-@media print{body{background:#fff}main{width:100%}.js .anim .node{opacity:1}.flow-dot,.replay{display:none}figure{box-shadow:none;break-inside:avoid}}
+:root {
+  --page: #f7f9fc;
+  --surface: #ffffff;
+  --surface-muted: #f0f4fa;
+  --text: #1a2332;
+  --muted: #5c6b80;
+  --line: #d8e0ec;
+  --accent: #2563eb;
+  --accent-ink: #1d4ed8;
+  --accent-pale: #e0ecff;
+  --external: #eef1f6;
+  --page-width: 1280px;
+  --toc-width: 180px;
+  --layout-gap: 40px;
+  --narrative-width: 760px;
+  --note-width: 270px;
+  --note-gap: 30px;
+  --radius: 10px;
+  --font-reading: "Source Han Serif SC", "思源宋体", "Noto Serif CJK SC", "Songti SC", serif;
+  --font-title: "Source Han Serif SC", "Noto Serif SC", Georgia, "Times New Roman", serif;
+  --font-mono: "SF Mono", "JetBrains Mono", ui-monospace, "Consolas", monospace;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--page); color: var(--text); }
+body { margin: 0; font: 17px/1.75 var(--font-reading); }
+.page { width: min(var(--page-width), calc(100% - 48px)); margin: 0 auto 96px; }
+.layout { display: grid; grid-template-columns: var(--toc-width) minmax(0, calc(var(--narrative-width) + var(--note-width) + var(--note-gap))); gap: var(--layout-gap); align-items: start; }
+.toc { position: sticky; top: 32px; padding-top: 76px; color: var(--muted); font: 13px/1.6 var(--font-reading); }
+.toc strong { display: block; margin-bottom: 10px; color: var(--text); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
+.toc a { display: block; padding: 5px 0; color: inherit; text-decoration: none; border-radius: 4px; }
+.toc a:hover, .toc a:focus-visible { color: var(--accent); text-decoration: underline; outline: none; }
+.toc a.active { color: var(--accent); font-weight: 600; }
+.content { min-width: 0; }
+.hero { max-width: var(--narrative-width); padding: 72px 0 40px; }
+.eyebrow { color: var(--accent); font: 600 12px/1.4 var(--font-reading); letter-spacing: .12em; text-transform: uppercase; }
+h1 { margin: 12px 0 16px; font-family: var(--font-title); font-size: clamp(36px, 5.5vw, 60px); line-height: 1.1; font-weight: 700; letter-spacing: -.01em; }
+h2 { margin: 72px 0 20px; font-size: 26px; line-height: 1.3; font-weight: 600; }
+h3 { margin: 32px 0 10px; font-size: 20px; line-height: 1.4; font-weight: 600; }
+.lede { color: var(--muted); font-size: 19px; line-height: 1.7; }
+
+section > h2, section > h3, section > p, section > ol, section > ul, section > .annotation-row,
+section > .callout, section > .technical-note, section > figure.plate,
+section > .table-scroll, blockquote {
+  width: min(var(--narrative-width), 100%);
+}
+p, li { overflow-wrap: break-word; }
+p { margin: 12px 0; }
+
+.note-ref { margin-left: 3px; font: 600 9px/1 var(--font-reading); vertical-align: super; white-space: nowrap; }
+.note-ref a { display: inline-grid; width: 1.55em; height: 1.55em; place-items: center; border: 1px solid var(--accent); border-radius: 50%; color: var(--accent); text-decoration: none; background: var(--surface); }
+.note-ref a:focus-visible, .note-ref a:hover { outline: 2px solid var(--accent); outline-offset: 2px; }
+.annotation-row { display: grid; grid-template-columns: minmax(0, var(--narrative-width)) var(--note-width); gap: var(--note-gap); align-items: start; width: min(calc(var(--narrative-width) + var(--note-width) + var(--note-gap)), 100%); }
+.annotation-main { min-width: 0; }
+.annotation-main > :first-child { margin-top: 0; }
+.annotation-main > :last-child { margin-bottom: 0; }
+.sidenote { width: auto; margin: 0; padding: 10px 0 10px 14px; border-left: 2px solid var(--accent); color: var(--muted); font: 12px/1.65 var(--font-reading); }
+.sidenote .note-label { display: block; margin-bottom: 4px; color: var(--accent); font: 600 11px/1.4 var(--font-reading); letter-spacing: .08em; text-transform: uppercase; }
+.sidenote code { font-family: var(--font-mono); font-size: 11.5px; overflow-wrap: anywhere; }
+.section-ref { color: var(--accent); font: 600 13px/1.5 var(--font-reading); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: .2em; }
+.section-ref:hover, .section-ref:focus-visible { color: var(--text); outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.callout { margin: 20px 0; padding: 16px 20px; border-left: 4px solid var(--accent); border-radius: var(--radius); background: var(--accent-pale); }
+.callout-title { margin-bottom: 4px; font-weight: 700; color: var(--accent-ink); }
+.callout.warning { border-color: #d97706; background: #fff7e6; }
+.callout.warning .callout-title { color: #92400e; }
+
+figure.plate { margin: 24px 0 8px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 2px 12px rgba(29,78,216,.05); }
+figure.plate.zoomable { position: relative; }
+figure.plate svg { display: block; width: 100%; height: auto; }
+figcaption { min-height: 28px; margin-top: 12px; padding-right: 42px; color: var(--muted); font: 13px/1.55 var(--font-reading); }
+
+.explain { max-width: var(--narrative-width); margin: 4px 0 32px; font-size: 15px; line-height: 1.7; color: var(--text); }
+.explain strong { color: var(--accent-ink); }
+.explain ul { margin: 8px 0; padding-left: 20px; }
+.explain li { margin: 4px 0; }
+
+.figure-zoom-trigger { position: absolute; right: 16px; bottom: 14px; width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--accent); font-family: var(--font-reading); cursor: zoom-in; box-shadow: 0 1px 4px rgba(0,0,0,.06); z-index: 2; }
+.figure-zoom-trigger::before { content: ""; position: absolute; left: 8px; top: 7px; width: 9px; height: 9px; border: 1.5px solid currentColor; border-radius: 50%; }
+.figure-zoom-trigger::after { content: ""; position: absolute; left: 17px; top: 17px; width: 7px; height: 1.5px; background: currentColor; transform: rotate(45deg); transform-origin: left center; }
+.figure-zoom-trigger:hover { border-color: var(--accent); background: var(--surface-muted); }
+.figure-zoom-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.figure-lightbox { width: min(96vw, 1600px); height: min(92vh, 1100px); max-width: none; max-height: none; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); box-shadow: 0 20px 70px rgba(23,30,35,.25); }
+.figure-lightbox::backdrop { background: rgba(15,23,42,.65); backdrop-filter: blur(3px); }
+.figure-lightbox[open] { display: block; }
+.zoom-shell { display: grid; grid-template-rows: auto minmax(0,1fr); height: 100%; }
+.zoom-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 52px; padding: 8px 12px 8px 18px; border-bottom: 1px solid var(--line); background: var(--surface); font: 12px/1.4 var(--font-reading); }
+.zoom-caption { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.zoom-controls { display: flex; align-items: center; flex: none; gap: 6px; }
+.zoom-controls button { min-width: 34px; height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font: 600 13px/1 var(--font-reading); cursor: pointer; }
+.zoom-controls button:hover { border-color: var(--accent); color: var(--accent); background: var(--surface-muted); }
+.zoom-controls .zoom-close { margin-left: 6px; font-size: 18px; }
+.zoom-viewport { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; background: #eef2f7; }
+.zoom-stage { display: flex; align-items: center; justify-content: center; box-sizing: border-box; padding: 24px; }
+.zoom-stage > svg, .zoom-stage > img { display: block; flex: none; max-width: none !important; height: auto; background: var(--surface); box-shadow: 0 2px 14px rgba(0,0,0,.10); }
+body.figure-zoom-open { overflow: hidden; }
+
+.technical-note { margin: 20px 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-muted); }
+.technical-note summary { cursor: pointer; padding: 10px 14px; color: var(--accent); font: 600 12px/1.4 var(--font-reading); letter-spacing: .06em; }
+.technical-note pre { margin: 0; padding: 14px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.55 var(--font-mono); }
+
+.table-scroll { overflow-x: auto; overscroll-behavior-inline: contain; }
+table { width: 100%; min-width: 560px; border-collapse: collapse; font: 14px/1.55 var(--font-reading); }
+th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { color: var(--accent-ink); font-weight: 600; background: var(--surface-muted); }
+
+code { font-family: var(--font-mono); font-size: .88em; color: var(--accent-ink); background: var(--accent-pale); padding: 1px 5px; border-radius: 4px; }
+
+.badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.badge { display: inline-block; padding: 4px 12px; border: 1px solid #b8cdf7; border-radius: 999px; background: var(--accent-pale); color: var(--accent-ink); font: 500 12px/1.5 var(--font-reading); }
+.badge.tbd { background: var(--external); border-color: #c9d1dc; color: #4f5b6a; }
+.badge.inference { border-style: dashed; }
+
+.replay-btn { margin-top: 8px; padding: 7px 16px; border: 1px solid var(--accent); border-radius: 8px; background: var(--surface); color: var(--accent-ink); font: 500 13px/1.5 var(--font-reading); cursor: pointer; transition: background .2s; }
+.replay-btn:hover { background: var(--accent-pale); }
+.replay-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.hint { margin: 6px 0 0; color: var(--muted); font: 12px/1.5 var(--font-reading); font-variant-numeric: tabular-nums; }
+
+.walkthrough-steps { margin: 20px 0; padding: 0; list-style: none; counter-reset: step; }
+.walkthrough-steps li { counter-increment: step; position: relative; padding: 12px 0 12px 44px; border-bottom: 1px dashed var(--line); }
+.walkthrough-steps li::before { content: counter(step); position: absolute; left: 0; top: 12px; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: #fff; font: 700 13px/1 var(--font-mono); }
+.walkthrough-steps li:last-child { border-bottom: none; }
+.walkthrough-steps strong { color: var(--accent-ink); }
+
+/* SVG diagram styles */
+.node { cursor: pointer; transition: opacity .2s ease; }
+.node rect, .node .box { transition: all .2s ease; }
+.node text { pointer-events: none; font-family: var(--font-reading); }
+.node .title { font-weight: 600; fill: var(--text); font-size: 14px; }
+.node .subtitle { fill: var(--muted); font-size: 11px; font-weight: 400; }
+.node.external rect { fill: var(--external); stroke: #8a96a8; stroke-width: 1.5; }
+.node.external .title { fill: #3a4656; }
+.node.internal rect { fill: var(--accent-pale); stroke: var(--accent); stroke-width: 1.8; }
+.node.core rect { fill: #c7d9ff; stroke: var(--accent-ink); stroke-width: 2; }
+.node.core .title { fill: var(--accent-ink); }
+.node:hover rect { filter: brightness(.96); }
+.node.hl rect { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 6px rgba(37,99,235,.35)); }
+
+.edge { fill: none; stroke: #6f7b8b; stroke-width: 1.6; }
+.edge.hl { stroke: var(--accent); stroke-width: 2.5; }
+.edge-label { fill: var(--muted); font-size: 11px; text-anchor: middle; font-family: var(--font-reading); }
+
+.flow-dot { fill: var(--accent); }
+.flow-dot.alt { fill: #059669; }
+.flow-dot.warn { fill: #d97706; }
+
+.hit { fill: transparent !important; stroke: none !important; pointer-events: all; }
+
+/* Animation */
+.js .anim .node { opacity: 0; transform: translateY(6px); }
+.js .anim.in-view .node { opacity: 1; transform: translateY(0); transition: opacity .5s ease, transform .5s ease; transition-delay: calc(var(--i) * 90ms); }
+.js .anim .edge { stroke-dasharray: 800; stroke-dashoffset: 800; }
+.js .anim.in-view .edge { stroke-dashoffset: 0; transition: stroke-dashoffset 1.2s ease; transition-delay: calc(var(--i) * 60ms + 200ms); }
+
+.step-dot { fill: var(--accent); opacity: 0; }
+.anim.in-view .step-dot { animation: stepPulse 2.4s ease-in-out infinite; animation-delay: calc(var(--i) * .4s); }
+@keyframes stepPulse {
+  0%, 100% { opacity: .15; r: 4; }
+  50% { opacity: 1; r: 7; }
+}
+
+.policy-badge { fill: var(--accent-pale); stroke: var(--accent); stroke-width: 1.2; }
+.policy-badge text { fill: var(--accent-ink); font-size: 10px; font-weight: 600; text-anchor: middle; font-family: var(--font-reading); }
+
+@media (max-width: 1320px) {
+  .layout { display: block; }
+  .toc { position: static; max-width: var(--narrative-width); padding: 24px 0 0; }
+  .toc a { display: inline-block; margin-right: 16px; }
+}
+@media (max-width: 960px) {
+  .page { width: min(100% - 32px, var(--page-width)); }
+  .annotation-row { display: block; width: auto; }
+  .sidenote { width: auto; margin: 16px 0; padding: 10px 14px; border: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--surface-muted); font-size: 13px; }
+}
+@media (max-width: 600px) {
+  .figure-lightbox { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
+  .zoom-toolbar { gap: 8px; padding-left: 12px; }
+  .zoom-caption { max-width: 72px; }
+  .zoom-controls { gap: 4px; }
+  .zoom-controls button { min-width: 32px; height: 32px; padding: 0 7px; }
+  .zoom-stage { padding: 16px; }
+  h1 { font-size: 32px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .js .anim .node, .js .anim .edge, .js .anim.in-view .node, .js .anim.in-view .edge { opacity: 1; transform: none; stroke-dashoffset: 0; transition: none; }
+  .step-dot { display: none; }
+  .flow-dot { display: none; }
+}
+@media print {
+  body { background: #fff; }
+  .page { width: auto; margin: 0; }
+  .sidenote { width: auto; margin: 12px 0; break-inside: avoid; }
+  figure.plate, .callout, .technical-note { break-inside: avoid; }
+  .figure-zoom-trigger, .figure-lightbox, .replay-btn { display: none !important; }
+  .js .anim .node, .js .anim .edge { opacity: 1; stroke-dashoffset: 0; }
+}
 </style>
 </head>
 <body>
-<main>
-<header>
-  <h1>xcrawl 架构总览</h1>
-  <p class="lede">rust 组件项目：从调用入口、源码分区到结果交付，用三张图建立五分钟系统地图。</p>
-  <div class="badges"><span class="badge">生成日期 2026-08-23</span><span class="badge">代码快照 135d27e</span><span class="badge">draft</span><span class="badge">双源确认</span></div>
-</header>
-<section id="product">
-  <h2>产品介绍</h2>
-  <p><strong>xcrawl 的边界由 CLI、核心源码和调用结果三部分组成。</strong> 它属于rust 组件方向，项目自述为“xcrawl is a policy-enforced, bounded Rust crawler for static HTTP(S) pages. Traversal and acquisition live here; page decoding, link discove”。这份鸟瞰面向第一次进入仓库的工程师：读者先从真实入口找到调用边界，再沿源码分区定位主要职责，最后用测试或示例核对可观察结果。页面不把目录名直接当作已确认的运行关系；只有 README、包清单、入口与测试能互相印证时，正文才把结论写成确定事实。</p>
-  <p><span class="badge">双源确认</span> README 与包清单都给出了产品线索，页面用入口源码与测试结构复核组件边界。 当前图把 <code>crawler</code>、<code>fetch</code>、<code>config</code> 作为阅读锚点；它们帮助定位代码，不替代公开接口或协议契约。</p>
-</section>
-<section id="features">
-  <h2>功能与特性</h2>
-  <ul class="feature-list">
-        <li><strong>入口边界</strong>：调用者通过 CLI（主程序入口）进入系统，适合先从真实入口确认调用边界。</li>
-        <li><strong>核心分区</strong>：源码把主要实现放在 crawler、fetch、config 等区域，适合按职责缩小阅读范围。</li>
-        <li><strong>依赖约束</strong>：Cargo.toml 记录 async-trait、clap、futures-util，适合复现构建并核对外部边界。</li>
-        <li><strong>结果交付</strong>：系统把处理结果作为“命令结果”交回调用者，具体数据契约以公开接口为准。</li>
-        <li><strong>变更验证</strong>：仓库包含测试入口，适合在修改核心模块后验证行为。</li>
-        <li><strong>使用线索</strong>：README 与包清单构成当前最直接的使用线索。</li>
-  </ul>
-</section>
-<section id="components">
-  <h2>组成与技术栈</h2>
-  <p><strong>系统由调用入口、核心模块、支撑模块和验证边界组成。</strong> 这里的“模块”指源码中的职责分区，不指单个类或函数；外部依赖以包清单为准，例如 <code>async-trait</code>、<code>clap</code>、<code>futures-util</code>。</p>
-  <dl>
-        <dt>实现语言</dt><dd>rust</dd>
-        <dt>入口形态</dt><dd>CLI · 主程序入口</dd>
-        <dt>源码分区</dt><dd>crawler / fetch / config / robots</dd>
-        <dt>外部依赖</dt><dd>async-trait / clap / futures-util / httpdate</dd>
-        <dt>验证线索</dt><dd>测试目录</dd>
-  </dl>
-</section>
-<section id="overview">
-  <h2>架构总览</h2>
-  <figure class="anim" id="fig-overview">
-    <svg role="group" aria-label="xcrawl 系统上下文" viewBox="0 0 920 420">
-      <title>xcrawl 从调用者进入接口并经过核心与支撑模块返回结果</title>
-      <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6f7b8b"/></marker></defs>
-      <text x="20" y="30" font-size="15" fill="#626b78">确定边界：入口与产出 · 虚线关系：由源码布局推断</text>
-      <path class="edge inferred" marker-end="url(#arrow)" data-from="caller" data-to="interface" d="M140 200 H200"/>
-      <path class="edge inferred" marker-end="url(#arrow)" data-from="interface" data-to="core" d="M350 190 H380 V115 H410"/>
-      <path class="edge inferred" marker-end="url(#arrow)" data-from="interface" data-to="support" d="M350 210 H380 V285 H410"/>
-      <path class="edge inferred" marker-end="url(#arrow)" data-from="core" data-to="output" d="M580 115 H620 V190 H650"/>
-      <path class="edge inferred" marker-end="url(#arrow)" data-from="support" data-to="output" d="M580 285 H620 V210 H650"/>
-      <path class="edge inferred" marker-end="url(#arrow)" data-from="support" data-to="verify" d="M580 285 H610 V335 H650"/>
-      <text class="edge-label" x="170" y="190" font-size="13">调用</text><text class="edge-label" x="365" y="145" font-size="13">分发</text><text class="edge-label" x="365" y="267" font-size="13">分发</text><text class="edge-label" x="608" y="145" font-size="13">返回</text><text class="edge-label" x="608" y="267" font-size="13">返回</text><text class="edge-label" x="620" y="326" font-size="13">验证</text>
-      <g class="node external" style="--i:0" data-depth="0" data-node="caller" data-explains="product" aria-label="调用者" tabindex="0"><rect class="hit" x="8" y="150" width="144" height="100" rx="8"/><rect x="20" y="165" width="120" height="70" rx="8"/><text x="80" y="196" font-size="16">调用者</text><text class="sub" x="80" y="218" font-size="13">人或上游系统</text></g>
-      <g class="node" style="--i:1" data-depth="1" data-node="interface" data-explains="features" aria-label="CLI" tabindex="0"><rect class="hit" x="188" y="150" width="174" height="100" rx="8"/><rect x="200" y="165" width="150" height="70" rx="8"/><text x="275" y="196" font-size="16">CLI</text><text class="sub" x="275" y="218" font-size="13">主程序入口</text></g>
-      <g class="node" style="--i:2" data-depth="2" data-node="core" data-explains="components" aria-label="核心模块 crawler" tabindex="0"><rect class="hit" x="398" y="65" width="194" height="100" rx="8"/><rect x="410" y="80" width="170" height="70" rx="8"/><text x="495" y="111" font-size="16">crawler</text><text class="sub" x="495" y="133" font-size="13">核心职责</text></g>
-      <g class="node" style="--i:2" data-depth="2" data-node="support" data-explains="components" aria-label="支撑模块 fetch" tabindex="0"><rect class="hit" x="398" y="235" width="194" height="100" rx="8"/><rect x="410" y="250" width="170" height="70" rx="8"/><text x="495" y="281" font-size="16">fetch</text><text class="sub" x="495" y="303" font-size="13">支撑职责</text></g>
-      <g class="node" style="--i:3" data-depth="3" data-node="output" data-explains="walkthrough" aria-label="命令结果" tabindex="0"><rect class="hit" x="638" y="150" width="184" height="100" rx="8"/><rect x="650" y="165" width="160" height="70" rx="8"/><text x="730" y="207" font-size="16">命令结果</text></g>
-      <g class="node external" style="--i:3" data-depth="3" data-node="verify" data-explains="tradeoffs" aria-label="测试与示例" tabindex="0"><rect class="hit" x="638" y="285" width="184" height="100" rx="8"/><rect x="650" y="300" width="160" height="70" rx="8"/><text x="730" y="331" font-size="16">测试与示例</text><text class="sub" x="730" y="353" font-size="13">观察行为</text></g>
-      <text x="20" y="402" font-size="13" fill="#626b78">点击或按 Enter 可跳到解释该组件的正文；悬停会压暗非相邻节点。</text>
-    </svg>
-    <figcaption>调用先进入 CLI，再由核心与支撑模块协作产出 命令结果。</figcaption>
-  </figure>
-  <p class="explain"><strong>图解：</strong>调用者是系统外部角色；CLI 负责接住请求；<code>crawler</code> 承担核心职责，<code>fetch</code> 提供支撑；命令结果 是调用者能观察到的终点，测试与示例用于复核行为。关键路径按“调用者 → CLI → crawler / fetch → 命令结果”阅读。<span class="badge inference">【推断】</span> 虚线表示源码布局推得的协作方向，公开接口仍是最终边界。</p>
-</section>
-<section id="walkthrough">
-  <h2>主走查：一次调用</h2>
-  <p><strong>一次调用用四个环节串起全部主要组件。</strong> 每个环节只回答“谁接手、做什么、下一站是谁”。</p>
-  <ol>
-    <li><strong>触发：</strong>调用者通过 主程序入口 把输入交给 CLI。</li>
-    <li><strong>分发：</strong>CLI 把工作导向 <code>crawler</code>，入口不承担全部核心职责。</li>
-    <li><strong>协作：</strong><code>crawler</code> 与 <code>fetch</code> 组合仓库内职责；外部依赖边界由 Cargo.toml 记录。</li>
-    <li><strong>观察：</strong>系统把 命令结果 交回调用者；测试入口复核同一路径。</li>
-  </ol>
-</section>
-<section id="structure">
-  <h2>代码结构视图</h2>
-  <figure class="anim" id="fig-structure">
-    <svg role="group" aria-label="从证据到验证的代码导航顺序" viewBox="0 0 920 360">
-      <title>阅读者依次用 README、包清单、接口、模块和测试建立代码地图</title>
-      <defs><marker id="arrow-2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6f7b8b"/></marker></defs>
-      <text x="20" y="34" font-size="15" fill="#626b78">证据阅读顺序</text>
-      <g stroke="#6f7b8b" stroke-width="1.5" fill="none" marker-end="url(#arrow-2)"><path d="M150 185 H170"/><path d="M300 185 H320"/><path d="M450 185 H470"/><path d="M600 185 H620"/><path d="M750 185 H770"/></g>
-      <g class="node external" style="--i:0" data-depth="0" data-node="readme" tabindex="0" aria-label="README.md"><rect class="hit" x="8" y="135" width="154" height="100" rx="8"/><rect x="20" y="150" width="130" height="70" rx="8"/><text x="85" y="192" font-size="15">README</text></g>
-      <g class="node external" style="--i:1" data-depth="1" data-node="manifest" tabindex="0" aria-label="Cargo.toml"><rect class="hit" x="158" y="135" width="154" height="100" rx="8"/><rect x="170" y="150" width="130" height="70" rx="8"/><text x="235" y="181" font-size="15">包清单</text><text class="sub" x="235" y="203" font-size="13">Cargo.toml</text></g>
-      <g class="node" style="--i:2" data-depth="2" data-node="entry" tabindex="0" aria-label="CLI"><rect class="hit" x="308" y="135" width="154" height="100" rx="8"/><rect x="320" y="150" width="130" height="70" rx="8"/><text x="385" y="192" font-size="15">CLI</text></g>
-      <g class="node" style="--i:3" data-depth="3" data-node="module-a" tabindex="0" aria-label="模块 crawler"><rect class="hit" x="458" y="135" width="154" height="100" rx="8"/><rect x="470" y="150" width="130" height="70" rx="8"/><text x="535" y="192" font-size="15">crawler</text></g>
-      <g class="node" style="--i:4" data-depth="4" data-node="module-b" tabindex="0" aria-label="模块 fetch"><rect class="hit" x="608" y="135" width="154" height="100" rx="8"/><rect x="620" y="150" width="130" height="70" rx="8"/><text x="685" y="192" font-size="15">fetch</text></g>
-      <g class="node external" style="--i:5" data-depth="5" data-node="tests" tabindex="0" aria-label="测试或示例"><rect class="hit" x="758" y="135" width="154" height="100" rx="8"/><rect x="770" y="150" width="130" height="70" rx="8"/><text x="835" y="192" font-size="15">测试 / 示例</text></g>
-      <text x="20" y="330" font-size="13" fill="#626b78">同一深度同时出现；先后只表示阅读依赖，不冒充运行时调用顺序。</text>
-    </svg>
-    <figcaption>README 定义问题，包清单限定技术边界，入口与模块解释实现，测试或示例负责复核。</figcaption>
-  </figure>
-  <p class="explain"><strong>图解：</strong>README 给出产品语境，Cargo.toml 给出 rust 依赖与构建边界，CLI 是阅读源码的入口；随后阅读 <code>crawler</code> 和 <code>fetch</code>，最后用测试或示例验证理解。这条路径是证据导航，不是类或函数清单，也不声称所有模块按图中顺序运行。</p>
-</section>
-<section id="data-flow">
-  <h2>核心数据流</h2>
-  <figure class="anim" id="fig-flow">
-    <svg role="group" aria-label="一次调用的数据流" viewBox="0 0 920 360">
-      <title>输入沿接口、核心、依赖边界流到可观察结果</title>
-      <defs><marker id="arrow-3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6f7b8b"/></marker></defs>
-      <text x="20" y="34" font-size="15" fill="#626b78">一次调用的端到端路径 </text>
-      <path id="flow-1" data-flow class="edge inferred" marker-end="url(#arrow-3)" d="M160 185 H210"/>
-      <path id="flow-2" data-flow class="edge inferred" marker-end="url(#arrow-3)" d="M350 185 H400"/>
-      <path id="flow-3" data-flow class="edge inferred" marker-end="url(#arrow-3)" d="M540 185 H590"/>
-      <path id="flow-4" data-flow class="edge inferred" marker-end="url(#arrow-3)" d="M730 185 H780"/>
-      <g class="node external" style="--i:0" data-node="input" tabindex="0" aria-label="输入"><rect class="hit" x="8" y="135" width="164" height="100" rx="8"/><rect x="20" y="150" width="140" height="70" rx="8"/><text x="90" y="192" font-size="16">输入</text></g>
-      <g class="node" style="--i:1" data-node="flow-interface" tabindex="0" aria-label="CLI"><rect class="hit" x="198" y="135" width="164" height="100" rx="8"/><rect x="210" y="150" width="140" height="70" rx="8"/><text x="280" y="192" font-size="16">CLI</text></g>
-      <g class="node" style="--i:2" data-node="flow-core" tabindex="0" aria-label="crawler"><rect class="hit" x="388" y="135" width="164" height="100" rx="8"/><rect x="400" y="150" width="140" height="70" rx="8"/><text x="470" y="192" font-size="16">crawler</text></g>
-      <g class="node external" style="--i:3" data-node="dependency" tabindex="0" aria-label="外部依赖"><rect class="hit" x="578" y="135" width="164" height="100" rx="8"/><rect x="590" y="150" width="140" height="70" rx="8"/><text x="660" y="181" font-size="15">外部依赖</text><text class="sub" x="660" y="203" font-size="13">async trait</text></g>
-      <g class="node" style="--i:4" data-node="flow-output" tabindex="0" aria-label="命令结果"><rect class="hit" x="768" y="135" width="144" height="100" rx="8"/><rect x="780" y="150" width="120" height="70" rx="8"/><text x="840" y="192" font-size="16">命令结果</text></g>
-      <text x="20" y="330" font-size="13" fill="#626b78">粒子只表达方向与路径归属；统一 3200ms 周期不暗示吞吐量差异。</text>
-    </svg>
-    <figcaption>输入沿 CLI、crawler 和外部依赖边界流向 命令结果。</figcaption>
-  </figure>
-  <p class="explain"><strong>图解：</strong>输入先到 CLI，核心模块 <code>crawler</code> 承接主要处理；外部依赖代表 Cargo.toml 声明的系统外边界；命令结果 回到调用者。关键路径按“输入 → CLI → crawler → 外部依赖 → 命令结果”阅读。<span class="badge inference">【推断】</span> 粒子只说明方向，不代表性能、吞吐或真实耗时。</p>
-  <button class="replay" type="button" data-replay="fig-flow">重放数据流</button><p class="hint" id="flow-hint">四段路径使用同一周期。</p>
-</section>
-<section id="tradeoffs">
-  <h2>架构特征与取舍</h2>
-  <h3>证据优先</h3><p><strong>页面把可证实事实与结构推断分开。</strong> README、Cargo.toml、入口和测试至少两处一致时才写成确定边；否则图使用点线并在正文标【推断】。</p>
-  <h3>边界风险</h3><p><strong>当前已有测试入口承接回归。</strong> 测试能复核主要调用路径，但不能代替接口契约。</p>
-  <h3>更新成本</h3><p><strong>代码演进后应重新核对模块名、入口与依赖。</strong> 三类事实都来自仓库快照 135d27e；只改时间戳而不核实架构会制造文档漂移。</p>
-</section>
-<footer>
-  <p>由 <code>code2arch</code> 生成 · 快照 135d27e · 再生成时先确认工作树干净，并重新运行静态、JS、Chromium 几何与截图门禁。</p>
+<main class="page"><div class="layout">
+  <nav class="toc" aria-label="页面目录">
+    <strong>目录</strong>
+    <a href="#product">产品介绍</a>
+    <a href="#features">功能与特性</a>
+    <a href="#tech-stack">技术栈概览</a>
+    <a href="#context">系统上下文</a>
+    <a href="#architecture">架构分层</a>
+    <a href="#walkthrough">主走查：单页抓取</a>
+    <a href="#modules">模块结构</a>
+    <a href="#dataflow">核心数据流</a>
+    <a href="#policy">策略与预算</a>
+    <a href="#tradeoffs">架构特征与取舍</a>
+  </nav>
+  <div class="content">
+  <header class="hero">
+    <div class="eyebrow">Rust 爬虫 · 架构总览</div>
+    <h1>xcrawl</h1>
+    <p class="lede">一个以策略边界为第一原则的静态网页爬虫。遍历、抓取和资源管控在这里完成；页面解析、链接发现与可读性提取委托给 <code>readabilities-rs</code>。本文用五张图建立五分钟系统地图。</p>
+    <div class="badges">
+      <span class="badge">生成日期 2026-08-26</span>
+      <span class="badge">代码快照 03c163c</span>
+      <span class="badge">draft</span>
+      <span class="badge">双源确认</span>
+    </div>
+  </header>
 
-</footer>
-</main>
+  <!-- ======== 产品介绍 ======== -->
+  <section id="product">
+    <h2>01 · 产品介绍</h2>
+    <div class="annotation-row">
+    <div class="annotation-main"><p>
+      <strong>xcrawl 是一个策略先行的单进程网页爬虫。</strong>它把「不越过配置边界」放在性能和覆盖面之前——在发出任何一次 HTTP 请求之前，依次经过 URL 校验、全局预算预留、源站速率许可和 CIDR 地址过滤，六道关口全过才真正发请求。
+      <sup class="note-ref"><a href="#note-1" role="doc-noteref" aria-describedby="note-1" aria-label="查看注释 1">1</a></sup>
+    </p></div>
+    <aside class="sidenote" id="note-1" role="note">
+      <span class="note-label">换个视角</span>
+      把 crawler 想成「审计过的抓取预算器」：每一次网络动作都先记账、再执行。即使目标站返回了意料之外的内容，消耗也不会越过配置上限。
+    </aside>
+    </div>
+
+    <p>它面向需要<strong>受控采集</strong>的场景——你知道要爬哪个站、要多少页、愿意花多少带宽，剩下的交给它：默认只爬种子 URL 的同站路径，深度和页数都有上限，robots.txt 按 RFC 9309 处理，私有地址和非标端口默认拒绝。</p>
+
+    <p>输出有两种形态：流式 JSON Lines 逐行吐出页面、失败、请求事件和最终摘要，不需要在内存里保留整个抓取结果；收集模式把结果聚合为一份完整的 <code>CrawlReport</code>。两种形态共享同一套抓取内核。</p>
+
+    <div class="callout">
+      <div class="callout-title">它不是什么</div>
+      xcrawl 不做浏览器渲染、不绕 WAF、不做分布式持久化、不下载文档类资源，也不绑定任何 REST 或 MCP 接口。这些能力属于外部系统，它只负责把拿到的响应体原封不动传给分析器。
+    </div>
+  </section>
+
+  <!-- ======== 功能与特性 ======== -->
+  <section id="features">
+    <h2>02 · 功能与特性</h2>
+    <p><strong>八个核心能力覆盖了从配置校验到结果交付的完整链路。</strong>每条特性止步于「读者知道有这能力、知道谁会用它」，运转机制留到后面的架构图与主走查里展开。</p>
+
+    <ul class="feature-list" style="padding-left:20px;list-style:none;">
+      <li style="margin:10px 0"><strong style="color:var(--accent-ink)">策略分组配置</strong> — 把参数按 traversal / scope / network / robots / retry / limits / output 七个维度分组，每组独立校验，冲突组合在启动前就拒绝。</li>
+      <li style="margin:10px 0"><strong style="color:var(--accent-ink)">六道请求前校验</strong> — 每次发请求前依次过 URL 格式、端口范围、作用域、全局预算、源站限流、CIDR 白黑名单，任一不通过即取消。</li>
+      <li style="margin:10px 0"><strong style="color:var(--accent-ink)">单跳传输模型</strong> — 关闭 reqwest 内置重定向，每一跳手动发起、手动校验目标、手动统计消耗，重定向不绕过作用域检查。</li>
+      <li style="margin:10px 0"><strong style="color:var(--accent-ink)">RFC 9309 robots</strong> — 支持 product-token 分组、`*` 和 `$` 通配、百分号归一化、Crawl-delay 上限；4xx 视为不可用（允许抓取），5xx 视为不可达（禁止抓取）。</li>
+      <li style="margin:10px 0"><strong style="color:var(--accent-ink)">自适应源站调度</strong> — 每个 origin 独立维护下一次可发时间、in-flight 信号量、robots delay 和 Retry-After 截止时间，支持 429/5xx 后指数退避。</li>
+      <li style="margin:10px 0"><strong style="color:var(--accent-ink)">可插拔页面分析</strong> — 通过 <code>PageAnalyzer</code> trait 接入，默认实现委托给 <code>readabilities-rs</code>；分析跑在 Tokio 阻塞池上，不占用网络并发槽位。</li>
+      <li style="margin:10px 0"><strong style="color:var(--accent-ink)">双模式输出</strong> — <code>crawl()</code> 收集完整报告，<code>crawl_with_sink()</code> 以流式 <code>CrawlRecord</code> 推送，后者不需要把页面驻留内存。</li>
+      <li style="margin:10px 0"><strong style="color:var(--accent-ink)">Frontier 可替换</strong> — <code>Frontier</code> trait 封装去重与入队语义，默认内存实现提供 BFS/DFS 两种策略；自定义实现可接入外部存储。</li>
+    </ul>
+  </section>
+
+  <!-- ======== 技术栈概览 ======== -->
+  <section id="tech-stack">
+    <h2>03 · 技术栈概览</h2>
+    <p><strong>全部用 Rust 写成，单二进制、无运行时依赖。</strong>异步运行时是 Tokio，HTTP 客户端是 reqwest（rustls 后端），CLI 由 clap 驱动。</p>
+    <div class="table-scroll" tabindex="0" aria-label="技术栈表格">
+      <table>
+        <thead><tr><th>层级</th><th>选型</th><th>角色</th></tr></thead>
+        <tbody>
+          <tr><td>语言与运行时</td><td>Rust 1.85 + Tokio</td><td>多线程异步运行时，网络与阻塞任务分离</td></tr>
+          <tr><td>HTTP 客户端</td><td>reqwest + rustls</td><td>单跳请求，关闭内置重定向与代理</td></tr>
+          <tr><td>页面分析</td><td>readabilities-rs</td><td>解码、链接发现、元数据提取、文章可读性</td></tr>
+          <tr><td>CLI 框架</td><td>clap (derive)</td><td>参数解析、分组、默认值、帮助生成</td></tr>
+          <tr><td>序列化</td><td>serde + serde_json</td><td>配置与输出的 JSON / JSON Lines</td></tr>
+          <tr><td>网络安全</td><td>ipnet</td><td>CIDR 白黑名单、私有地址过滤</td></tr>
+          <tr><td>日志</td><td>tracing + tracing-subscriber</td><td>分级诊断，通过 <code>-v</code> / <code>RUST_LOG</code> 控制</td></tr>
+          <tr><td>URL 处理</td><td>url crate</td><td>解析、归一化、origin 计算</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ======== 系统上下文图 ======== -->
+  <section id="context">
+    <h2>04 · 系统上下文</h2>
+    <p><strong>xcrawl 坐在调用者和目标网站之间，左接命令或库调用，右连 HTTP 网络。</strong>页面分析这一步委托给外部 crate <code>readabilities-rs</code>，它本身不做任何 HTML 解析。</p>
+
+    <figure class="plate zoomable anim" id="fig-context">
+      <svg viewBox="0 0 760 340" role="img" aria-label="xcrawl 系统上下文图">
+        <defs>
+          <marker id="arrow-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6f7b8b"/></marker>
+          <marker id="arrow-c-hl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/></marker>
+        </defs>
+
+        <!-- Center: xcrawl -->
+        <g class="node core" data-explains="architecture" style="--i:3">
+          <rect x="270" y="130" width="220" height="80" rx="10"/>
+          <text class="title" x="380" y="162">xcrawl</text>
+          <text class="subtitle" x="380" y="184">策略控制 · 抓取调度</text>
+        </g>
+
+        <!-- Left: User / CLI -->
+        <g class="node external" style="--i:1">
+          <rect x="40" y="60" width="160" height="60" rx="8"/>
+          <text class="title" x="120" y="86">命令行 / 库调用</text>
+          <text class="subtitle" x="120" y="106">调用者</text>
+        </g>
+
+        <!-- Right: Target websites -->
+        <g class="node external" style="--i:2">
+          <rect x="560" y="50" width="160" height="60" rx="8"/>
+          <text class="title" x="640" y="76">目标网站</text>
+          <text class="subtitle" x="640" y="96">HTTP(S) 服务器</text>
+        </g>
+
+        <!-- Below: readabilities-rs -->
+        <g class="node external" data-explains="tech-stack" style="--i:4">
+          <rect x="280" y="260" width="200" height="55" rx="8"/>
+          <text class="title" x="380" y="286">readabilities-rs</text>
+          <text class="subtitle" x="380" y="304">页面分析 · 链接提取</text>
+        </g>
+
+        <!-- Edges -->
+        <path class="edge" d="M200 90 L270 150" marker-end="url(#arrow-c)" style="--i:5"/>
+        <text class="edge-label" x="235" y="114">种子 URL + 配置</text>
+
+        <path class="edge" d="M490 150 L560 80" marker-end="url(#arrow-c)" style="--i:6"/>
+        <text class="edge-label" x="525" y="106">HTTP 请求</text>
+        <path class="edge" d="M560 90 L490 160" marker-end="url(#arrow-c)" style="--i:7"/>
+        <text class="edge-label" x="525" y="140">响应体</text>
+
+        <path class="edge" d="M380 210 L380 260" marker-end="url(#arrow-c)" style="--i:8"/>
+        <text class="edge-label" x="345" y="238">响应快照</text>
+        <path class="edge" d="M400 260 L400 210" marker-end="url(#arrow-c)" style="--i:9"/>
+        <text class="edge-label" x="435" y="238">分析结果</text>
+
+        <!-- Output edge -->
+        <path class="edge hl" d="M270 180 L200 250" marker-end="url(#arrow-c-hl)" style="--i:10"/>
+        <text class="edge-label" x="225" y="228">CrawlRecord</text>
+
+        <!-- Output receiver -->
+        <g class="node external" style="--i:11">
+          <rect x="60" y="250" width="140" height="55" rx="8"/>
+          <text class="title" x="130" y="276">输出接收方</text>
+          <text class="subtitle" x="130" y="294">stdout / 自定义 sink</text>
+        </g>
+      </svg>
+      <figcaption>调用者给出种子与策略，xcrawl 向目标网站发请求并把响应快照交给分析器，最终以记录流返回结果。</figcaption>
+      <button class="figure-zoom-trigger" type="button" aria-label="放大查看"></button>
+    </figure>
+
+    <div class="explain">
+      <strong>图解。</strong>四个外部角色环绕中心的 xcrawl：
+      <ul>
+        <li><strong>调用者</strong>通过 CLI 或库 API 进入，提供种子 URL 和策略配置；库模式下还可以注入自定义 <code>Frontier</code> 和 <code>CrawlSink</code>。</li>
+        <li><strong>目标网站</strong>是纯 HTTP 交互对象，xcrawl 关闭重定向后每一跳手动发起，保证作用域校验不会被绕过。</li>
+        <li><strong>readabilities-rs</strong>是可替换的分析后端，xcrawl 只传原始响应字节，不持有任何 DOM 或解析逻辑。</li>
+        <li><strong>输出接收方</strong>默认是标准输出（JSON Lines），也可以是实现了 <code>CrawlSink</code> trait 的任意结构体。</li>
+      </ul>
+      一条关键路径：调用者 → 配置校验 → 抓取循环 → 单跳请求 → 分析器 → 记录输出。<em>注意</em>，robots.txt 请求也走同一套单跳传输，不会绕过预算和限流。
+    </div>
+  </section>
+
+  <!-- ======== 架构分层 ======== -->
+  <section id="architecture">
+    <h2>05 · 架构分层</h2>
+    <p><strong>内部划分为五层，自上而下依赖方向严格一致。</strong>上层调用下层，下层不感知上层。策略与配置在最顶部，执行内核在中间，传输与分析在最底部。</p>
+
+    <figure class="plate zoomable anim" id="fig-layers">
+      <svg viewBox="0 0 760 420" role="img" aria-label="xcrawl 分层架构图">
+        <defs>
+          <marker id="arrow-l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6f7b8b"/></marker>
+          <linearGradient id="grad1" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#dbe7ff"/>
+            <stop offset="100%" stop-color="#e8f0fe"/>
+          </linearGradient>
+        </defs>
+
+        <!-- Layer 1: Entry -->
+        <g class="node internal" data-explains="product" style="--i:1">
+          <rect x="80" y="20" width="600" height="55" rx="8" fill="url(#grad1)"/>
+          <text class="title" x="380" y="44">入口层 · CLI + Library</text>
+          <text class="subtitle" x="380" y="64">clap 参数解析 · Crawler 构造 · 输出格式化</text>
+        </g>
+
+        <!-- Layer 2: Orchestration -->
+        <g class="node core" data-explains="walkthrough" style="--i:2">
+          <rect x="80" y="95" width="600" height="60" rx="8"/>
+          <text class="title" x="380" y="122">编排层 · Crawler 主循环</text>
+          <text class="subtitle" x="380" y="142">Frontier 出队 · 并发调度 · 事件分发 · 结果聚合</text>
+        </g>
+
+        <!-- Layer 3: Policy & Control -->
+        <g class="node internal" data-explains="policy" style="--i:3">
+          <rect x="80" y="175" width="600" height="65" rx="8"/>
+          <text class="title" x="380" y="202">策略控制层</text>
+          <text class="subtitle" x="380" y="222">CrawlBudget · OriginScheduler · RobotsState · ScopeContext</text>
+        </g>
+
+        <!-- Layer 4: Transport -->
+        <g class="node internal" style="--i:4">
+          <rect x="80" y="260" width="600" height="60" rx="8"/>
+          <text class="title" x="380" y="286">传输层 · OneHopTransport</text>
+          <text class="subtitle" x="380" y="306">单跳 HTTP · CIDR 校验 DNS · 流式字节计费 · 重试</text>
+        </g>
+
+        <!-- Layer 5: Analysis -->
+        <g class="node external" data-explains="tech-stack" style="--i:5">
+          <rect x="80" y="340" width="600" height="55" rx="8"/>
+          <text class="title" x="380" y="366">分析层 · PageAnalyzer</text>
+          <text class="subtitle" x="380" y="386">readabilities-rs 委托 · 阻塞池执行 · trait 可替换</text>
+        </g>
+
+        <!-- Vertical dependency arrows -->
+        <path class="edge" d="M380 75 L380 95" marker-end="url(#arrow-l)" style="--i:6"/>
+        <path class="edge" d="M380 155 L380 175" marker-end="url(#arrow-l)" style="--i:7"/>
+        <path class="edge" d="M380 240 L380 260" marker-end="url(#arrow-l)" style="--i:8"/>
+        <path class="edge" d="M380 320 L380 340" marker-end="url(#arrow-l)" style="--i:9"/>
+
+        <!-- Side labels for data flow direction -->
+        <text x="52" y="145" fill="var(--muted)" font-size="11" font-family="var(--font-reading)" transform="rotate(-90 52 145)">调用方向 ↓</text>
+      </svg>
+      <figcaption>五层自上而下严格依赖：入口调编排、编排调策略、策略控制传输、传输结果送分析。</figcaption>
+      <button class="figure-zoom-trigger" type="button" aria-label="放大查看"></button>
+    </figure>
+
+    <div class="explain">
+      <strong>分层职责。</strong>
+      <ul>
+        <li><strong>入口层</strong>负责把 CLI 参数或库调用翻译成 <code>CrawlConfig</code>，在进入主循环前完成配置校验。它不参与任何网络动作。</li>
+        <li><strong>编排层</strong>是 <code>Crawler::run</code> 的主循环：从 Frontier 出队、管理并发 <code>FuturesUnordered</code>、处理成功失败、把新发现链接重新入队、向 sink 推送记录。</li>
+        <li><strong>策略控制层</strong>是抓取的守门人：预算检查扣减、源站限流排队、robots.txt 规则判定、作用域匹配。任何请求都必须先过这一层。</li>
+        <li><strong>传输层</strong>只做一件事：发出一单跳 HTTP 请求并返回结果（或重定向位置）。内嵌 CIDR 校验的 DNS 解析器，阻止 SSRF 类攻击。</li>
+        <li><strong>分析层</strong>是 trait 边界，默认实现把原始字节丢给 <code>readabilities-rs</code>，跑在阻塞线程池上，不占网络并发槽。</li>
+      </ul>
+      容易混淆的是「策略控制」和「传输」：策略决定<strong>能不能发</strong>，传输负责<strong>怎么发</strong>。两者之间是单向调用——传输层从不反查策略。
+    </div>
+  </section>
+
+  <!-- ======== 主走查 ======== -->
+  <section id="walkthrough">
+    <h2>06 · 主走查：单页抓取全流程</h2>
+    <p><strong>拿一个 frontier 中的 URL，走完从出队到产出 CrawlPage 的六步。</strong>这是 xcrawl 最核心的执行路径，所有策略控制点都在这条线上。</p>
+
+    <ol class="walkthrough-steps">
+      <li><strong>出队与预算预检</strong> — 主循环从 <code>Frontier</code> 取出下一条 <code>FrontierEntry</code>，先检查全局预算（页数、HTTP 请求数、deadline）是否还有余量，不满足则直接标记终止。</li>
+      <li><strong>获取源站许可</strong> — 向 <code>OriginScheduler</code> 申请该源站的 in-flight 信号量和下一次可发时间，必要时 sleep 等待。robots.txt 的 Crawl-delay 和 Retry-After 也在这里合并进等待时间。</li>
+      <li><strong>robots 判定</strong> — 该源站的 robots 状态若未拉取，先异步发起一次 robots.txt 请求（同样走单跳传输 + 预算），然后用 user-agent 匹配规则，不允许则返回 robots 拒绝失败。</li>
+      <li><strong>单跳请求</strong> — <code>OneHopTransport::send_one_hop</code> 发起 HTTP GET，先做 URL/端口/CIDR 校验，再流式下载并逐块扣减字节预算。遇到 3xx 返回重定向位置而非自动跟随。</li>
+      <li><strong>重定向处理</strong> — 若收到重定向，对目标 URL 重做作用域检查和预算预留，递归最多 <code>max_redirects</code> 跳。HTTPS → HTTP 降级默认拒绝。</li>
+      <li><strong>分析与发现</strong> — 把最终响应体以 move 方式传给 <code>PageAnalyzer</code>（在阻塞池执行），得到文章内容、链接、元数据；链接经过 scope/depth/nofollow 过滤后批量回注 Frontier。</li>
+    </ol>
+
+    <div class="callout">
+      <div class="callout-title">为什么是单跳而不是自动重定向？</div>
+      reqwest 的内置重定向会跳过作用域检查、robots 判定和预算计费。手动处理每一跳，才能保证「每次实际网络动作都先审计」这个核心不变量不被绕过。代价是代码量增加——但这是有意的取舍。
+    </div>
+  </section>
+
+  <!-- ======== 模块结构 ======== -->
+  <section id="modules">
+    <h2>07 · 模块结构与依赖</h2>
+    <p><strong>十一个源文件，核心是 <code>crawler.rs</code>（占 30%）。</strong>依赖关系从外向内收束：<code>main.rs</code> 只依赖公共 API，<code>crawler.rs</code> 协调全部内部模块，<code>fetch.rs</code> 和 <code>analyzer.rs</code> 是两个与外部系统对接的边界。</p>
+
+    <figure class="plate zoomable anim" id="fig-modules">
+      <svg viewBox="0 0 760 480" role="img" aria-label="xcrawl 模块依赖图">
+        <defs>
+          <marker id="arrow-m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6f7b8b"/></marker>
+        </defs>
+
+        <!-- Center: crawler (orchestrator) -->
+        <g class="node core" style="--i:1">
+          <rect x="290" y="200" width="180" height="70" rx="8"/>
+          <text class="title" x="380" y="230">crawler.rs</text>
+          <text class="subtitle" x="380" y="250">主循环 · 调度 · 聚合</text>
+        </g>
+
+        <!-- Top: config, model -->
+        <g class="node internal" style="--i:2">
+          <rect x="40" y="40" width="160" height="55" rx="8"/>
+          <text class="title" x="120" y="65">config.rs</text>
+          <text class="subtitle" x="120" y="85">CrawlConfig · 七组策略</text>
+        </g>
+        <g class="node internal" style="--i:3">
+          <rect x="560" y="40" width="160" height="55" rx="8"/>
+          <text class="title" x="640" y="65">model.rs</text>
+          <text class="subtitle" x="640" y="85">数据结构 · CrawlRecord</text>
+        </g>
+
+        <!-- Left: budget, throttle, robots, frontier -->
+        <g class="node internal" style="--i:4">
+          <rect x="20" y="140" width="150" height="50" rx="8"/>
+          <text class="title" x="95" y="163">budget.rs</text>
+          <text class="subtitle" x="95" y="180">资源预算</text>
+        </g>
+        <g class="node internal" style="--i:5">
+          <rect x="20" y="220" width="150" height="50" rx="8"/>
+          <text class="title" x="95" y="243">throttle.rs</text>
+          <text class="subtitle" x="95" y="260">源站调度</text>
+        </g>
+        <g class="node internal" style="--i:6">
+          <rect x="20" y="300" width="150" height="50" rx="8"/>
+          <text class="title" x="95" y="323">robots.rs</text>
+          <text class="subtitle" x="95" y="340">RFC 9309 规则</text>
+        </g>
+        <g class="node internal" style="--i:7">
+          <rect x="20" y="380" width="150" height="50" rx="8"/>
+          <text class="title" x="95" y="403">frontier.rs</text>
+          <text class="subtitle" x="95" y="420">URL 队列 · 去重</text>
+        </g>
+
+        <!-- Right: fetch, analyzer, error -->
+        <g class="node internal" style="--i:8">
+          <rect x="590" y="140" width="150" height="50" rx="8"/>
+          <text class="title" x="665" y="163">fetch.rs</text>
+          <text class="subtitle" x="665" y="180">单跳传输 · DNS</text>
+        </g>
+        <g class="node external" style="--i:9">
+          <rect x="590" y="220" width="150" height="50" rx="8"/>
+          <text class="title" x="665" y="243">analyzer.rs</text>
+          <text class="subtitle" x="665" y="260">PageAnalyzer trait</text>
+        </g>
+        <g class="node internal" style="--i:10">
+          <rect x="590" y="300" width="150" height="50" rx="8"/>
+          <text class="title" x="665" y="323">error.rs</text>
+          <text class="subtitle" x="665" y="340">错误类型</text>
+        </g>
+
+        <!-- Bottom: lib.rs, main.rs -->
+        <g class="node internal" style="--i:11">
+          <rect x="250" y="410" width="110" height="50" rx="8"/>
+          <text class="title" x="305" y="433">lib.rs</text>
+          <text class="subtitle" x="305" y="450">公共 API 导出</text>
+        </g>
+        <g class="node external" style="--i:12">
+          <rect x="400" y="410" width="110" height="50" rx="8"/>
+          <text class="title" x="455" y="433">main.rs</text>
+          <text class="subtitle" x="455" y="450">CLI 入口</text>
+        </g>
+
+        <!-- Edges from crawler to modules -->
+        <path class="edge" d="M290 220 L170 165" marker-end="url(#arrow-m)" style="--i:13"/>
+        <path class="edge" d="M290 240 L170 245" marker-end="url(#arrow-m)" style="--i:14"/>
+        <path class="edge" d="M290 260 L170 325" marker-end="url(#arrow-m)" style="--i:15"/>
+        <path class="edge" d="M300 270 L170 405" marker-end="url(#arrow-m)" style="--i:16"/>
+
+        <path class="edge" d="M470 220 L590 165" marker-end="url(#arrow-m)" style="--i:17"/>
+        <path class="edge" d="M470 240 L590 245" marker-end="url(#arrow-m)" style="--i:18"/>
+        <path class="edge" d="M470 260 L590 325" marker-end="url(#arrow-m)" style="--i:19"/>
+
+        <!-- Edges: crawler uses config, model -->
+        <path class="edge" d="M330 200 L200 95" marker-end="url(#arrow-m)" style="--i:20"/>
+        <path class="edge" d="M430 200 L560 95" marker-end="url(#arrow-m)" style="--i:21"/>
+
+        <!-- Edges: lib.rs exports -->
+        <path class="edge" d="M305 410 L330 270" marker-end="url(#arrow-m)" style="--i:22"/>
+        <path class="edge" d="M455 410 L420 270" marker-end="url(#arrow-m)" style="--i:23"/>
+        <path class="edge" d="M360 435 L400 435" marker-end="url(#arrow-m)" style="--i:24"/>
+      </svg>
+      <figcaption>crawler.rs 是依赖中心，向左协调四类策略模块，向右对接传输与分析；config 和 model 是被全库引用的数据基础。</figcaption>
+      <button class="figure-zoom-trigger" type="button" aria-label="放大查看"></button>
+    </figure>
+
+    <div class="explain">
+      <strong>依赖方向。</strong>图中箭头表示「使用 / 依赖」关系，从上到下、从边到心收束到 <code>crawler.rs</code>：
+      <ul>
+        <li><code>config.rs</code> 和 <code>model.rs</code> 是纯数据层，几乎不依赖其他模块，被全库引用。</li>
+        <li>左侧四个策略模块（budget / throttle / robots / frontier）各管一类约束，被 crawler 调用，彼此之间不直接依赖。</li>
+        <li>右侧 <code>fetch.rs</code> 和 <code>analyzer.rs</code> 是两个边界模块——前者对接网络，后者对接外部分析 crate。</li>
+        <li><code>lib.rs</code> 做公共 API 的再导出，<code>main.rs</code> 只调公共 API。</li>
+      </ul>
+      这种「中心协调 + 四周能力」的布局让替换单个能力（比如换一个持久化 Frontier）不影响其他模块。
+    </div>
+  </section>
+
+  <!-- ======== 核心数据流 ======== -->
+  <section id="dataflow">
+    <h2>08 · 核心数据流</h2>
+    <p><strong>数据从 URL 入队开始，经过抓取和分析，最终以 CrawlRecord 流出。</strong>整条链路上有两个分叉点：重定向（回到抓取起点）和失败（直接输出 Failure 记录）。</p>
+
+    <figure class="plate zoomable anim" id="fig-dataflow">
+      <svg viewBox="0 0 760 380" role="img" aria-label="xcrawl 核心数据流图" id="dataflow-svg">
+        <defs>
+          <marker id="arrow-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6f7b8b"/></marker>
+          <marker id="arrow-d-hl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/></marker>
+        </defs>
+
+        <!-- Nodes -->
+        <g class="node internal" data-path="start" style="--i:1">
+          <rect x="30" y="40" width="120" height="50" rx="8"/>
+          <text class="title" x="90" y="63">Frontier</text>
+          <text class="subtitle" x="90" y="80">URL 出队</text>
+        </g>
+
+        <g class="node internal" data-path="policy" style="--i:2">
+          <rect x="200" y="40" width="130" height="50" rx="8"/>
+          <text class="title" x="265" y="63">策略预检</text>
+          <text class="subtitle" x="265" y="80">预算 · 限流 · scope</text>
+        </g>
+
+        <g class="node internal" data-path="robots" style="--i:3">
+          <rect x="380" y="40" width="120" height="50" rx="8"/>
+          <text class="title" x="440" y="63">Robots 判定</text>
+          <text class="subtitle" x="440" y="80">RFC 9309</text>
+        </g>
+
+        <g class="node internal" data-path="fetch" style="--i:4">
+          <rect x="550" y="40" width="150" height="50" rx="8"/>
+          <text class="title" x="625" y="63">单跳 HTTP</text>
+          <text class="subtitle" x="625" y="80">OneHopTransport</text>
+        </g>
+
+        <!-- Decision: redirect? -->
+        <g class="node internal" data-path="decision" style="--i:5">
+          <rect x="570" y="140" width="110" height="50" rx="8"/>
+          <text class="title" x="625" y="163">重定向？</text>
+          <text class="subtitle" x="625" y="180">3xx + scope 校验</text>
+        </g>
+
+        <g class="node internal" data-path="analyze" style="--i:6">
+          <rect x="380" y="240" width="120" height="55" rx="8"/>
+          <text class="title" x="440" y="265">页面分析</text>
+          <text class="subtitle" x="440" y="284">阻塞池 · analyzer</text>
+        </g>
+
+        <g class="node internal" data-path="process" style="--i:7">
+          <rect x="180" y="240" width="140" height="55" rx="8"/>
+          <text class="title" x="250" y="265">链接处理</text>
+          <text class="subtitle" x="250" y="284">scope · depth · 去重</text>
+        </g>
+
+        <g class="node internal" data-path="enqueue" style="--i:8">
+          <rect x="30" y="240" width="120" height="55" rx="8"/>
+          <text class="title" x="90" y="265">回注 Frontier</text>
+          <text class="subtitle" x="90" y="284">enqueue_if_new</text>
+        </g>
+
+        <!-- Output: success -->
+        <g class="node core" data-path="output" style="--i:9">
+          <rect x="30" y="330" width="120" height="40" rx="8"/>
+          <text class="title" x="90" y="355">CrawlRecord</text>
+        </g>
+
+        <!-- Failure output -->
+        <g class="node external" data-path="failure" style="--i:10">
+          <rect x="580" y="240" width="120" height="55" rx="8"/>
+          <text class="title" x="640" y="265">CrawlFailure</text>
+          <text class="subtitle" x="640" y="284">失败记录</text>
+        </g>
+
+        <!-- Main flow edges -->
+        <path class="edge main-flow" d="M150 65 L200 65" marker-end="url(#arrow-d)" style="--i:11" id="e1"/>
+        <path class="edge main-flow" d="M330 65 L380 65" marker-end="url(#arrow-d)" style="--i:12" id="e2"/>
+        <path class="edge main-flow" d="M500 65 L550 65" marker-end="url(#arrow-d)" style="--i:13" id="e3"/>
+        <path class="edge main-flow" d="M625 90 L625 140" marker-end="url(#arrow-d)" style="--i:14" id="e4"/>
+
+        <!-- Redirect loop back -->
+        <path class="edge" d="M570 165 Q 500 130 440 90" marker-end="url(#arrow-d)" style="--i:15" id="e5"/>
+        <text class="edge-label" x="490" y="108">重定向目标</text>
+
+        <!-- Fetch → analyze (2xx path) -->
+        <path class="edge main-flow" d="M625 190 L625 240" marker-end="url(#arrow-d)" style="--i:16" id="e6"/>
+        <text class="edge-label" x="648" y="220">2xx</text>
+
+        <!-- Analyze → link processing -->
+        <path class="edge main-flow" d="M380 268 L320 268" marker-end="url(#arrow-d)" style="--i:17" id="e7"/>
+
+        <!-- Link processing → enqueue -->
+        <path class="edge main-flow" d="M180 268 L150 268" marker-end="url(#arrow-d)" style="--i:18" id="e8"/>
+
+        <!-- Enqueue → back to frontier top -->
+        <path class="edge" d="M60 240 Q 10 140 60 90" marker-end="url(#arrow-d)" style="--i:19" id="e9"/>
+        <text class="edge-label" x="18" y="170" transform="rotate(-90 18 170)">新链接</text>
+
+        <!-- Analyze → output (page record) -->
+        <path class="edge hl main-flow" d="M380 280 Q 200 320 90 350" marker-end="url(#arrow-d-hl)" style="--i:20" id="e10"/>
+        <text class="edge-label" x="250" y="315">Page / Event 记录</text>
+
+        <!-- Failure path -->
+        <path class="edge" d="M555 165 L580 240" marker-end="url(#arrow-d)" style="--i:21" id="e11"/>
+        <text class="edge-label" x="560" y="208">失败</text>
+
+        <!-- Failure → output -->
+        <path class="edge" d="M640 295 L640 330 Q 300 370 150 360" marker-end="url(#arrow-d)" style="--i:22" id="e12"/>
+        <text class="edge-label" x="400" y="358">Failure 记录</text>
+
+        <!-- Flow dots (animated by JS) -->
+        <circle class="flow-dot" r="4" style="--i:23" data-flow-path="main">
+          <animateMotion dur="4s" repeatCount="indefinite" path="M 150 65 L 200 65 L 330 65 L 380 65 L 500 65 L 550 65 L 625 65 L 625 140 L 625 190 L 625 240 L 560 268 L 500 268 L 440 268 L 380 268 L 320 268 L 250 268 L 180 268 L 150 268 L 90 268 L 60 268"/>
+        </circle>
+      </svg>
+      <figcaption>数据流从 Frontier 出发，依次经过策略预检、robots 判定、单跳抓取、页面分析、链接处理，最后产出 CrawlRecord；新链接回注 Frontier 形成闭环。</figcaption>
+      <button class="figure-zoom-trigger" type="button" aria-label="放大查看"></button>
+    </figure>
+
+    <div class="explain">
+      <strong>数据流主线。</strong>蓝色粒子沿主路径运动，展示一次成功抓取的完整数据流转：
+      <ul>
+        <li><strong>入口</strong>：<code>FrontierEntry</code>（URL + depth）从队列出来，这是每一页的起点。</li>
+        <li><strong>三道闸</strong>：策略预检 → robots 判定 → 单跳传输，任一环节不通过就转向失败路径。</li>
+        <li><strong>核心转换</strong>：HTTP 响应体 → <code>PageInput</code> → <code>PageAnalysis</code>，数据形态从原始字节变成结构化的文章和链接。</li>
+        <li><strong>两个出口</strong>：成功产出 <code>CrawlPage</code> + 链接回注；失败产出 <code>CrawlFailure</code>，两者都是 <code>CrawlRecord</code> 的变体。</li>
+        <li><strong>闭环</strong>：新发现的链接经过 scope 和 depth 过滤后回注 Frontier，驱动抓取持续推进。</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ======== 策略与预算 ======== -->
+  <section id="policy">
+    <h2>09 · 策略与预算系统</h2>
+    <p><strong>这是 xcrawl 区别于普通爬虫的核心。</strong>预算不是简单的计数变量——它是一个在每次网络动作前都必须「先预约、后消费」的记账系统，任何环节的超额都会立即终止对应的动作。</p>
+
+    <div class="annotation-row">
+    <div class="annotation-main"><p>
+      策略分七层组织：遍历（怎么爬）、作用域（爬哪里）、网络（怎么连）、robots（守规矩）、重试（失败怎么办）、资源限制（花多少）、输出（长什么样）。每一层都有独立的默认值和校验逻辑。
+      <sup class="note-ref"><a href="#note-2" role="doc-noteref" aria-describedby="note-2" aria-label="查看注释 2">2</a></sup>
+    </p></div>
+    <aside class="sidenote" id="note-2" role="note">
+      <span class="note-label">核对处</span>
+      七个策略分组对应 <code>config.rs</code> 里的七个 struct：<code>TraversalPolicy</code>、<code>ScopePolicy</code>、<code>NetworkPolicy</code>、<code>RobotsPolicy</code>、<code>RetryPolicy</code>、<code>ResourceLimits</code>、<code>OutputPolicy</code>。
+    </aside>
+    </div>
+
+    <figure class="plate zoomable anim" id="fig-policy">
+      <svg viewBox="0 0 760 360" role="img" aria-label="策略与预算控制点示意图">
+        <defs>
+          <marker id="arrow-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6f7b8b"/></marker>
+          <marker id="arrow-p-hl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--accent)"/></marker>
+        </defs>
+
+        <!-- Central: URL / Request -->
+        <g class="node core" style="--i:1">
+          <rect x="320" y="155" width="120" height="55" rx="8"/>
+          <text class="title" x="380" y="180">HTTP 请求</text>
+          <text class="subtitle" x="380" y="198">实际发出</text>
+        </g>
+
+        <!-- Left side: sequential gates -->
+        <g class="node internal" style="--i:2">
+          <rect x="20" y="30" width="150" height="45" rx="6"/>
+          <text class="title" x="95" y="52">1. URL 校验</text>
+          <text class="subtitle" x="95" y="68">格式 · 端口 · 长度</text>
+        </g>
+        <g class="node internal" style="--i:3">
+          <rect x="20" y="90" width="150" height="45" rx="6"/>
+          <text class="title" x="95" y="112">2. 作用域匹配</text>
+          <text class="subtitle" x="95" y="128">origin / domain / any</text>
+        </g>
+        <g class="node internal" style="--i:4">
+          <rect x="20" y="150" width="150" height="45" rx="6"/>
+          <text class="title" x="95" y="172">3. 全局预算</text>
+          <text class="subtitle" x="95" y="188">请求数 · 字节 · origin</text>
+        </g>
+        <g class="node internal" style="--i:5">
+          <rect x="20" y="210" width="150" height="45" rx="6"/>
+          <text class="title" x="95" y="232">4. 源站限流</text>
+          <text class="subtitle" x="95" y="248">delay · in-flight · 退避</text>
+        </g>
+        <g class="node internal" style="--i:6">
+          <rect x="20" y="270" width="150" height="45" rx="6"/>
+          <text class="title" x="95" y="292">5. CIDR 过滤</text>
+          <text class="subtitle" x="95" y="308">DNS 解析时校验</text>
+        </g>
+
+        <!-- Arrows through gates -->
+        <path class="edge" d="M170 52 L320 168" marker-end="url(#arrow-p)" style="--i:7"/>
+        <text class="edge-label" x="245" y="96">依次通过</text>
+
+        <!-- Right side: budget accounting -->
+        <g class="node internal" style="--i:8">
+          <rect x="590" y="30" width="150" height="55" rx="6"/>
+          <text class="title" x="665" y="55">CrawlBudget</text>
+          <text class="subtitle" x="665" y="73">全局资源账本</text>
+        </g>
+        <g class="node internal" style="--i:9">
+          <rect x="590" y="105" width="150" height="55" rx="6"/>
+          <text class="title" x="665" y="130">OriginScheduler</text>
+          <text class="subtitle" x="665" y="148">每源站计时 + 信号量</text>
+        </g>
+        <g class="node internal" style="--i:10">
+          <rect x="590" y="180" width="150" height="55" rx="6"/>
+          <text class="title" x="665" y="205">RobotsState</text>
+          <text class="subtitle" x="665" y="223">规则 + Crawl-delay</text>
+        </g>
+        <g class="node internal" style="--i:11">
+          <rect x="590" y="255" width="150" height="55" rx="6"/>
+          <text class="title" x="665" y="280">NetworkGuard</text>
+          <text class="subtitle" x="665" y="298">CIDR · 端口 · DNS</text>
+        </g>
+
+        <!-- Connect right-side entities to request -->
+        <path class="edge hl" d="M590 58 L440 168" marker-end="url(#arrow-p-hl)" style="--i:12"/>
+        <path class="edge hl" d="M590 132 L440 175" marker-end="url(#arrow-p-hl)" style="--i:13"/>
+        <path class="edge hl" d="M590 207 L440 182" marker-end="url(#arrow-p-hl)" style="--i:14"/>
+        <path class="edge hl" d="M590 282 L440 195" marker-end="url(#arrow-p-hl)" style="--i:15"/>
+
+        <!-- Resource categories -->
+        <text x="665" y="18" fill="var(--muted)" font-size="11" text-anchor="middle" font-family="var(--font-reading)">四类策略实体</text>
+        <text x="95" y="18" fill="var(--muted)" font-size="11" text-anchor="middle" font-family="var(--font-reading)">五道检查关口</text>
+      </svg>
+      <figcaption>每次 HTTP 请求前依次过五道关口，每道关口对应右侧一个策略实体；所有检查通过后请求才真正发出。</figcaption>
+      <button class="figure-zoom-trigger" type="button" aria-label="放大查看"></button>
+    </figure>
+
+    <div class="explain">
+      <strong>策略控制点。</strong>左侧是请求发出前必须通过的五道检查，右侧是支撑这些检查的四个策略实体：
+      <ul>
+        <li><strong>URL 校验</strong>：格式合法性、端口是否在允许列表、URL 长度是否超限。这是最便宜的检查，最先做。</li>
+        <li><strong>作用域匹配</strong>：按 origin / domain / any 三级判定，再叠加路径前缀的 include/exclude。重定向目标也走这一步。</li>
+        <li><strong>全局预算</strong>：<code>CrawlBudget</code> 维护 HTTP 请求数、下载字节数、唯一 origin 数三个计数器，加上总 deadline。预约成功才继续。</li>
+        <li><strong>源站限流</strong>：<code>OriginScheduler</code> 用信号量限制 in-flight 并发，用时间戳维护下一次可发时间，合并 robots delay 和 Retry-After。</li>
+        <li><strong>CIDR 过滤</strong>：在 DNS 解析阶段（<code>ValidatingResolver</code>）就验证解析出的 IP 不在拒绝列表里，从源头阻止 SSRF。</li>
+      </ul>
+      这些检查的排列顺序是「先便宜后昂贵」：计算量小的放在前面，涉及网络等待的放在后面。
+    </div>
+  </section>
+
+  <!-- ======== 架构特征与取舍 ======== -->
+  <section id="tradeoffs">
+    <h2>10 · 架构特征与取舍</h2>
+    <p><strong>xcrawl 的设计选择偏向保守和可控，而不是最大吞吐。</strong>下面六个取舍反映了它「策略优先」的核心定位。</p>
+
+    <h3>单跳传输 vs 自动重定向</h3>
+    <p>关闭 reqwest 的重定向能力，手动处理每一跳。<strong>代价</strong>是代码量增加、需要自己维护重定向链；<strong>收益</strong>是重定向目标也必须过作用域、预算和 robots 检查，没有任何网络动作能绕过策略层。对于安全敏感的采集场景，这笔交易是划算的。</p>
+
+    <h3>内存 Frontier vs 持久化队列</h3>
+    <p>默认 <code>InMemoryFrontier</code> 全部放内存，结构简单、入队去重原子。<strong>代价</strong>是不能做大规模分布式抓取，也不能断点续爬；<strong>收益</strong>是接口极简、无外部依赖。需要持久化时通过 <code>Frontier</code> trait 注入自定义实现。</p>
+
+    <h3>同步分析器 vs 异步分析器</h3>
+    <p><code>PageAnalyzer</code> trait 是同步的，分析跑在 Tokio 阻塞池上。<strong>代价</strong>是分析和网络共享同一套并发模型但不共享槽位，需要用户理解「网络并发 8 不等于总并发 8」；<strong>收益</strong>是 trait 简单，接 CPU 密集型解析库（如 html5ever 这类同步实现）不需要额外适配。</p>
+
+    <h3>预算预扣 vs 事后结算</h3>
+    <p>全局预算（请求数、字节、origin 数）在请求前预扣，失败不退回。<strong>代价</strong>是某些失败场景会浪费预算计数；<strong>收益</strong>是不会出现「已经发了请求才发现超预算」的竞态，预算上限是硬边界而不是软目标。</p>
+
+    <h3>细粒度策略分组 vs 简单配置</h3>
+    <p>配置按七个维度分组，每个维度有五到十个参数，CLI 暴露三十多个 flag。<strong>代价</strong>是新用户上手有学习成本，参数之间可能有冲突；<strong>收益</strong>是每个约束都可以独立调节，配置冲突在启动时就能被 <code>validate()</code> 捕获。</p>
+
+    <h3>流式输出 vs 全量收集</h3>
+    <p>提供两种使用模式：<code>crawl_with_sink</code> 流式推送、<code>crawl</code> 收集报告。<strong>代价</strong>是内部多了一层 <code>CrawlSink</code> 抽象和 emit 状态管理；<strong>收益</strong>是大批量抓取不需要把所有页面驻留内存，输出字节也有预算上限。</p>
+  </section>
+
+  <footer class="footnotes" aria-label="页脚">
+    <p><strong>生成信息</strong> · 工具：code2arch · 日期：2026-08-26 · 代码快照：03c163c</p>
+    <p>代码演进后再生成：在仓库根运行 code2arch 技能，或手动更新本文件的 revisions 记录。</p>
+  </footer>
+
+  </div>
+  </div></main>
+
+  <dialog class="figure-lightbox" aria-label="插图查看器"><div class="zoom-shell">
+    <div class="zoom-toolbar"><span class="zoom-caption"></span><div class="zoom-controls" aria-label="缩放控制"><button type="button" data-zoom-out aria-label="缩小">−</button><button type="button" data-zoom-fit aria-label="适合窗口">适配</button><button type="button" data-zoom-actual aria-label="恢复百分之百">100%</button><button type="button" data-zoom-in aria-label="放大">＋</button><button type="button" class="zoom-close" data-zoom-close aria-label="关闭">×</button></div></div>
+    <div class="zoom-viewport" tabindex="0" aria-label="可滚动的放大插图"><div class="zoom-stage"></div></div>
+  </div></dialog>
+
 <script>
-const REDUCED=matchMedia("(prefers-reduced-motion: reduce)").matches;
-let ioArmed=false;
-setTimeout(()=>{if(!ioArmed)document.querySelectorAll("figure.anim").forEach(f=>f.classList.add("in-view"))},1500);
-const io=new IntersectionObserver((entries,observer)=>{for(const e of entries)if(e.isIntersecting){e.target.classList.add("in-view");observer.unobserve(e.target)}},{rootMargin:"0px 0px -15% 0px"});
-document.querySelectorAll("figure.anim").forEach(f=>io.observe(f));ioArmed=true;
-function adjacent(svg,a,b){if(a===b)return true;return [...svg.querySelectorAll("[data-from]")].some(e=>(e.dataset.from===a&&e.dataset.to===b)||(e.dataset.from===b&&e.dataset.to===a))}
-function setHl(svg,id,on){svg.classList.toggle("focus-mode",on);svg.querySelectorAll("[data-node]").forEach(n=>n.classList.toggle("hl",on&&adjacent(svg,id,n.dataset.node)));svg.querySelectorAll("[data-from]").forEach(e=>e.classList.toggle("hl",on&&(e.dataset.from===id||e.dataset.to===id)))}
-document.querySelectorAll("svg").forEach(svg=>svg.querySelectorAll("[data-node]").forEach(n=>{["mouseenter","focus"].forEach(ev=>n.addEventListener(ev,()=>setHl(svg,n.dataset.node,true)));["mouseleave","blur"].forEach(ev=>n.addEventListener(ev,()=>setHl(svg,n.dataset.node,false)))}));
-document.querySelectorAll("[data-explains]").forEach(n=>{const go=()=>{const t=document.getElementById(n.dataset.explains);if(!t)return;t.scrollIntoView({behavior:REDUCED?"auto":"smooth",block:"center"});t.classList.add("flash");setTimeout(()=>t.classList.remove("flash"),1200)};n.addEventListener("click",go);n.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}})});
-const FLOW_MS=3200;let flowDots=[];
-function clearFlowDots(){flowDots.forEach(d=>d.remove());flowDots=[]}
-function flowDot(pathEl,phase){const len=pathEl.getTotalLength(),dot=document.createElementNS("http://www.w3.org/2000/svg","circle");dot.setAttribute("r","3.5");dot.setAttribute("class","flow-dot");pathEl.parentNode.appendChild(dot);flowDots.push(dot);const t0=performance.now()-phase;requestAnimationFrame(function step(t){if(!dot.isConnected)return;const pt=pathEl.getPointAtLength((((t-t0)%FLOW_MS)/FLOW_MS)*len);dot.setAttribute("cx",pt.x);dot.setAttribute("cy",pt.y);requestAnimationFrame(step)})}
-function playFlow(){clearFlowDots();if(REDUCED)return;const flows=[...document.querySelectorAll("#fig-flow [data-flow]")];flows.forEach((p,i)=>flowDot(p,i*FLOW_MS/flows.length));document.getElementById("flow-hint").textContent="数据正在沿四段路径向右流动。"}
-document.querySelector("[data-replay=fig-flow]").addEventListener("click",playFlow);playFlow();
-window.__seqSeek=(id,n)=>{const fig=document.getElementById(id);if(!fig)return-1;fig.classList.add("in-view");return Math.max(0,Math.min(Number(n)||0,fig.querySelectorAll(".node").length))};
-addEventListener("beforeprint",()=>document.querySelectorAll("figure.anim").forEach(f=>f.classList.add("in-view")));
-window.__docReady=true;
+window.__docErrors = [];
+try {
+(() => {
+  // ===== Figure zoom (lightbox) =====
+  const dialog = document.querySelector('.figure-lightbox');
+  const viewport = dialog.querySelector('.zoom-viewport');
+  const stage = dialog.querySelector('.zoom-stage');
+  const caption = dialog.querySelector('.zoom-caption');
+  let active = null, placeholder = null, previousFocus = null;
+  let baseWidth = 0, baseHeight = 0, scale = 1;
+  const clamp = v => Math.min(4, Math.max(.25, v));
+  const render = value => {
+    if (!active) return;
+    scale = clamp(value);
+    const w = baseWidth * scale, h = baseHeight * scale;
+    active.style.width = `${w}px`; active.style.height = `${h}px`;
+    stage.style.width = `${Math.max(viewport.clientWidth, w + 48)}px`;
+    stage.style.height = `${Math.max(viewport.clientHeight, h + 48)}px`;
+  };
+  const fit = () => render(Math.min((viewport.clientWidth - 48) / baseWidth, (viewport.clientHeight - 48) / baseHeight));
+  const close = () => {
+    if (!active) return;
+    placeholder.replaceWith(active);
+    active = null; placeholder = null;
+    dialog.close();
+    document.body.classList.remove('figure-zoom-open');
+    if (previousFocus) previousFocus.focus();
+  };
+  document.querySelectorAll('.figure-zoom-trigger').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const fig = btn.closest('figure');
+      const svg = fig.querySelector('svg');
+      if (!svg) return;
+      previousFocus = document.activeElement;
+      const vb = svg.getAttribute('viewBox').split(/\s+/).map(Number);
+      baseWidth = vb[2]; baseHeight = vb[3];
+      placeholder = document.createComment('zoom-placeholder');
+      svg.parentNode.insertBefore(placeholder, svg);
+      stage.innerHTML = '';
+      stage.appendChild(svg);
+      active = svg;
+      active.style.width = baseWidth + 'px';
+      active.style.height = baseHeight + 'px';
+      caption.textContent = fig.querySelector('figcaption')?.textContent || '';
+      document.body.classList.add('figure-zoom-open');
+      dialog.showModal();
+      requestAnimationFrame(() => { fit(); viewport.focus(); });
+    });
+  });
+  dialog.querySelector('[data-zoom-close]').addEventListener('click', close);
+  dialog.addEventListener('close', close);
+  dialog.querySelector('[data-zoom-in]').addEventListener('click', () => render(scale * 1.25));
+  dialog.querySelector('[data-zoom-out]').addEventListener('click', () => render(scale / 1.25));
+  dialog.querySelector('[data-zoom-fit]').addEventListener('click', fit);
+  dialog.querySelector('[data-zoom-actual]').addEventListener('click', () => render(1));
+  viewport.addEventListener('wheel', e => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    render(scale * (e.deltaY < 0 ? 1.15 : 1/1.15));
+  }, { passive: false });
+  dialog.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { close(); e.preventDefault(); }
+    else if (e.key === '+' || e.key === '=') { render(scale * 1.25); e.preventDefault(); }
+    else if (e.key === '-') { render(scale / 1.25); e.preventDefault(); }
+    else if (e.key === '0') { fit(); e.preventDefault(); }
+    else if (e.key.toLowerCase() === 'f') { fit(); e.preventDefault(); }
+  });
+
+  // ===== IntersectionObserver: trigger entrance animations =====
+  const animFigures = document.querySelectorAll('.anim');
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('in-view');
+      }
+    });
+  }, { threshold: 0.15 });
+  animFigures.forEach(f => io.observe(f));
+
+  // ===== Total active TOC tracking =====
+  const tocLinks = document.querySelectorAll('.toc a');
+  const sections = Array.from(tocLinks).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const tocIO = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        const id = '#' + e.target.id;
+        tocLinks.forEach(l => l.classList.toggle('active', l.getAttribute('href') === id));
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+  sections.forEach(s => tocIO.observe(s));
+
+  // ===== Data-explains: click node jumps to section =====
+  document.querySelectorAll('.node[data-explains]').forEach(node => {
+    node.setAttribute('tabindex', '0');
+    node.setAttribute('role', 'button');
+    const goto = () => {
+      const id = node.getAttribute('data-explains');
+      const target = document.getElementById(id);
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        // flash highlight
+        target.style.transition = 'background .4s ease';
+        target.style.background = 'var(--accent-pale)';
+        setTimeout(() => { target.style.background = ''; }, 900);
+      }
+    };
+    node.addEventListener('click', goto);
+    node.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goto(); }
+    });
+  });
+
+  // ===== Flow particle: add secondary paths in dataflow =====
+  const dataflowSvg = document.getElementById('dataflow-svg');
+  if (dataflowSvg) {
+    // Redirect flow dot (orange)
+    const dot2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    dot2.setAttribute('class', 'flow-dot alt');
+    dot2.setAttribute('r', '3.5');
+    const anim2 = document.createElementNS('http://www.w3.org/2000/svg', 'animateMotion');
+    anim2.setAttribute('dur', '5s');
+    anim2.setAttribute('repeatCount', 'indefinite');
+    anim2.setAttribute('begin', '1.5s');
+    anim2.setAttribute('path', 'M 625 140 Q 560 120 500 90 Q 440 70 440 65');
+    dot2.appendChild(anim2);
+    dataflowSvg.appendChild(dot2);
+  }
+
+  window.__docReady = true;
+})();
+} catch (e) {
+  window.__docErrors.push('init: ' + String(e.message || e));
+  window.__docReady = true;
+}
 </script>
 </body>
 </html>
