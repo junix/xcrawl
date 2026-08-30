@@ -349,6 +349,10 @@ async fn request_budget_counts_redirect_hops() {
         report.failures[0].error.kind,
         xcrawl::FailureKind::ResourceBudget
     );
+    assert_eq!(
+        report.failures[0].error.message,
+        "resource budget exhausted: http_requests limit 1"
+    );
 }
 
 #[tokio::test]
@@ -366,7 +370,13 @@ async fn total_download_budget_is_enforced_while_streaming() {
         report.failures[0].error.kind,
         xcrawl::FailureKind::ResourceBudget
     );
-    assert!(report.stats.downloaded_bytes <= 32);
+    assert_eq!(
+        report.failures[0].error.message,
+        "resource budget exhausted: download_bytes limit 32"
+    );
+    // The failing reserve clamps the counter to the limit, so the crawl
+    // reports exactly the budget, never a byte more or less.
+    assert_eq!(report.stats.downloaded_bytes, 32);
 }
 
 #[tokio::test]
@@ -387,6 +397,14 @@ async fn reported_links_are_bounded_and_total_is_preserved() {
     assert_eq!(report.pages[0].links_discovered, 50);
     assert_eq!(report.pages[0].links.len(), 5);
     assert!(report.pages[0].links_truncated);
+    // The report keeps the first links in document order, not an arbitrary
+    // five of the fifty discovered.
+    let reported: Vec<&str> = report.pages[0]
+        .links
+        .iter()
+        .map(|link| link.url.path())
+        .collect();
+    assert_eq!(reported, ["/p0", "/p1", "/p2", "/p3", "/p4"]);
 }
 
 #[tokio::test]
@@ -448,10 +466,11 @@ async fn missing_content_type_page_body_is_not_downloaded() {
 
 #[tokio::test]
 async fn decodable_text_page_body_still_downloads() {
+    const BODY: &str = "plain text notes that must still be downloaded";
     let (seed, server) = serve(Arc::new(move |_| Reply {
         status: "200 OK",
         headers: vec![("Content-Type".into(), "text/plain".into())],
-        body: "plain text notes that must still be downloaded".to_string(),
+        body: BODY.to_string(),
         delay: Duration::ZERO,
         close_without_response: false,
     }))
@@ -464,7 +483,7 @@ async fn decodable_text_page_body_still_downloads() {
     assert_eq!(report.outcome, CrawlOutcome::Complete);
     let page = &report.pages[0];
     assert_eq!(page.content_type.as_deref(), Some("text/plain"));
-    assert!(page.body_bytes > 0);
+    assert_eq!(page.body_bytes, BODY.len());
     assert_eq!(report.stats.downloaded_bytes, page.body_bytes);
 }
 

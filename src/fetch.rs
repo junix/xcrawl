@@ -528,17 +528,24 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_redact_query_values() {
+    fn diagnostics_redact_query_values_and_credentials() {
         let url = Url::parse("https://example.test/path?secret=value&x=1").unwrap();
-        let rendered = safe_url(&url);
-        assert!(!rendered.contains("value"));
-        assert!(!rendered.contains("x=1"));
+        assert_eq!(
+            safe_url(&url),
+            "https://example.test/path?secret=REDACTED&x=REDACTED"
+        );
+        let credentialed = Url::parse("https://user:pass@example.test/path").unwrap();
+        assert_eq!(safe_url(&credentialed), "https://example.test/path");
     }
 
     #[test]
     fn only_actual_redirect_statuses_are_followed() {
-        assert!(is_followed_redirect(301));
-        assert!(!is_followed_redirect(304));
+        for status in [301, 302, 303, 307, 308] {
+            assert!(is_followed_redirect(status), "{status} must be followed");
+        }
+        for status in [200, 204, 300, 304, 305, 306, 310, 400] {
+            assert!(!is_followed_redirect(status), "{status} must be ignored");
+        }
     }
 
     #[test]
