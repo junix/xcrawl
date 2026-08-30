@@ -158,6 +158,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn normalization_variations_dedupe_to_one_entry() {
+        let frontier = InMemoryFrontier::new(CrawlStrategy::BreadthFirst, 4);
+        let variants = [
+            "https://example.test/docs#a",
+            "https://example.test/docs#b",
+            "https://EXAMPLE.test/docs",
+        ];
+        let entries = variants
+            .into_iter()
+            .map(|raw| FrontierEntry {
+                url: Url::parse(raw).unwrap(),
+                depth: 0,
+            })
+            .collect();
+        let result = frontier.enqueue_if_new(entries).await.unwrap();
+        // Fragments are stripped and host case is canonicalized before the
+        // dedup key is formed, so all three spellings are one URL.
+        assert_eq!(result.enqueued.len(), 1);
+        assert_eq!(result.duplicates, 2);
+        assert_eq!(result.rejected_capacity, 0);
+    }
+
+    #[tokio::test]
     async fn pop_order_follows_the_configured_strategy() {
         for (strategy, expected) in [
             (CrawlStrategy::BreadthFirst, ["/a", "/b", "/c"]),

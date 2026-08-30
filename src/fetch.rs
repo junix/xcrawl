@@ -503,6 +503,7 @@ fn safe_error_message(error: &(dyn StdError + 'static)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::PortPolicy;
 
     fn guard() -> NetworkGuard {
         NetworkGuard::new(NetworkPolicy::default())
@@ -525,6 +526,146 @@ mod tests {
         assert!(guard()
             .validate_ip("2606:4700:4700::1111".parse().unwrap())
             .is_ok());
+    }
+
+    #[test]
+    fn default_exceptions_allow_carved_out_addresses() {
+        // 192.0.0.9 sits inside the denied 192.0.0.0/24 but is a documented
+        // exception; 192.0.2.1 in the same range is not.
+        assert!(guard().validate_ip("192.0.0.9".parse().unwrap()).is_ok());
+        assert!(guard().validate_ip("2001:1::1".parse().unwrap()).is_ok());
+        assert_eq!(
+            guard()
+                .validate_ip("192.0.2.1".parse().unwrap())
+                .unwrap_err()
+                .to_string(),
+            "network target denied: address 192.0.2.1 is denied by the CIDR policy"
+        );
+    }
+
+    #[test]
+    fn explicit_allow_and_deny_lists_beat_the_default_policy() {
+        let denied = NetworkPolicy {
+            denied_cidrs: vec!["93.184.216.0/24".parse().unwrap()],
+            ..NetworkPolicy::default()
+        };
+        assert_eq!(
+            NetworkGuard::new(denied)
+                .validate_ip("93.184.216.34".parse().unwrap())
+                .unwrap_err()
+                .to_string(),
+            "network target denied: address 93.184.216.34 is denied by the CIDR policy"
+        );
+
+        let allowed = NetworkPolicy {
+            allowed_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
+            ..NetworkPolicy::default()
+        };
+        assert!(NetworkGuard::new(allowed)
+            .validate_ip("10.1.2.3".parse().unwrap())
+            .is_ok());
+
+        let permissive = NetworkPolicy {
+            deny_non_global: false,
+            ..NetworkPolicy::default()
+        };
+        assert!(NetworkGuard::new(permissive)
+            .validate_ip("10.1.2.3".parse().unwrap())
+            .is_ok());
+    }
+
+    #[test]
+    fn validate_url_rejects_non_web_schemes_credentials_and_ports() {
+        for (url, ports, expected) in [
+            (
+                "ftp://example.com/file",
+                PortPolicy::Any,
+                "invalid URL: only http and https URLs are supported",
+            ),
+            (
+                "http://user:pass@example.com/",
+                PortPolicy::Any,
+                "invalid URL: embedded URL credentials are not allowed",
+            ),
+            (
+                "http://user@example.com/",
+                PortPolicy::Any,
+                "invalid URL: embedded URL credentials are not allowed",
+            ),
+            (
+                "http://example.com:8080/",
+                PortPolicy::WebOnly,
+                "network target denied: TCP port 8080 is denied by policy",
+            ),
+        ] {
+            let policy = NetworkPolicy {
+                allowed_ports: ports,
+                ..NetworkPolicy::default()
+            };
+            let url = Url::parse(url).unwrap();
+            assert_eq!(
+                validate_url(&url, &policy).unwrap_err().to_string(),
+                expected,
+                "{url}"
+            );
+        }
+        for (url, ports) in [
+            ("https://example.com/page", PortPolicy::WebOnly),
+            ("http://example.com/", PortPolicy::WebOnly),
+            ("http://example.com:8080/", PortPolicy::Any),
+            (
+                "http://example.com:8080/",
+                PortPolicy::Explicit(vec![8080]),
+            ),
+        ] {
+            let policy = NetworkPolicy {
+                allowed_ports: ports,
+                ..NetworkPolicy::default()
+            };
+            let url = Url::parse(url).unwrap();
+            assert!(validate_url(&url, &policy).is_ok(), "{url}");
+        }
+    }
+
+    #[test]
+    fn retry_after_accepts_seconds_and_http_dates_only() {
+        assert_eq!(
+            parse_retry_after("120"),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(parse_retry_after(" 42 "), Some(Duration::from_secs(42)));
+        assert_eq!(parse_retry_after("0"), Some(Duration::ZERO));
+        assert_eq!(
+            parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(parse_retry_after("soon"), None);
+        assert_eq!(parse_retry_after("-1"), None);
+
+        // A future HTTP-date deadline yields the remaining window; the exact
+        // value moves with the wall clock, so pin it from below.
+        let remaining = parse_retry_after("Mon, 01 Jan 2035 00:00:00 GMT")
+            .expect("a future HTTP date yields a delay");
+        assert!(
+            remaining > Duration::from_secs(86_400 * 365),
+            "remaining was {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn origin_key_fills_in_default_ports() {
+        assert_eq!(
+            origin_key(&Url::parse("https://example.com/a").unwrap()),
+            "https://example.com:443"
+        );
+        assert_eq!(
+            origin_key(&Url::parse("http://example.com:8080/").unwrap()),
+            "http://example.com:8080"
+        );
+        assert_eq!(
+            origin_key(&Url::parse("http://EXAMPLE.com/").unwrap()),
+            "http://example.com:80"
+        );
     }
 
     #[test]
