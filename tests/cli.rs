@@ -425,6 +425,265 @@ fn jsonl_is_the_default_and_broken_pipe_is_successful_cancellation() {
     assert!(!diagnostics.contains("error:"), "{diagnostics}");
 }
 
+#[test]
+fn the_default_jsonl_stream_emits_records_in_protocol_order() {
+    let (url, _server) = healthy_site();
+    // No --format flag: JSON Lines is the default output mode.
+    let output = run(&[
+        &url,
+        "--ignore-robots",
+        "--allow-private-networks",
+        "--allow-nonstandard-ports",
+        "--max-retries",
+        "0",
+        "--delay",
+        "0ms",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let records: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every line is one JSON record"))
+        .collect();
+    let good = format!("{}good", url);
+    // One record per wire event: the seed request, its discovery, the page
+    // event and page record, then the same pair for the linked page, then
+    // the completion event and the summary. Requests precede the
+    // discoveries they produced, and the summary is always last.
+    let tags: Vec<&str> = records
+        .iter()
+        .map(|record| record["record"].as_str().expect("tagged record"))
+        .collect();
+    assert_eq!(
+        tags,
+        ["event", "event", "event", "page", "event", "event", "page", "event", "summary"],
+        "{stdout}"
+    );
+    assert_eq!(records[0]["value"]["event"], "request");
+    assert_eq!(records[0]["value"]["kind"], "page");
+    assert_eq!(records[0]["value"]["attempt"], 1);
+    assert_eq!(records[0]["value"]["status"], 200);
+    assert_eq!(records[1]["value"]["event"], "discovered");
+    assert_eq!(records[1]["value"]["url"], good);
+    assert_eq!(records[1]["value"]["depth"], 1);
+    assert_eq!(records[2]["value"]["event"], "page");
+    assert_eq!(records[3]["value"]["status"], 200);
+    assert_eq!(records[3]["value"]["depth"], 0);
+    assert_eq!(records[4]["value"]["event"], "request");
+    assert_eq!(records[4]["value"]["url"], good);
+    assert_eq!(records[6]["value"]["status"], 200);
+    assert_eq!(records[6]["value"]["final_url"], good);
+    assert_eq!(records[6]["value"]["depth"], 1);
+    assert_eq!(records[7]["value"]["event"], "complete");
+    assert_eq!(records[7]["value"]["outcome"], "complete");
+    assert_eq!(records[8]["value"]["outcome"], "complete");
+    assert_eq!(records[8]["value"]["stats"]["pages_crawled"], 2);
+    assert!(records[8]["value"].get("termination_reason").is_none());
+}
+
+#[test]
+fn a_deadline_crawl_exits_one_and_names_the_deadline() {
+    let (url, _server) = chain_site();
+    // 120ms of pacing per hop cannot finish a six-page chain inside a
+    // 300ms crawl deadline, so the deadline is what terminates the crawl.
+    let output = run(&[
+        &url,
+        "--ignore-robots",
+        "--allow-private-networks",
+        "--allow-nonstandard-ports",
+        "--max-retries",
+        "0",
+        "--delay",
+        "120ms",
+        "--max-crawl-duration",
+        "300ms",
+        "--timeout",
+        "250ms",
+        "--dns-timeout",
+        "100ms",
+        "--retry-base-delay",
+        "40ms",
+        "--retry-max-delay",
+        "50ms",
+        "--max-depth",
+        "5",
+        "--max-pages",
+        "10",
+        "--format",
+        "json",
+        "--compact",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["outcome"], "deadline_exceeded");
+    assert_eq!(report["termination_reason"], "crawl deadline exceeded");
+    // Deadline termination is not a page failure.
+    assert_eq!(report["failures"].as_array().map(Vec::len), Some(0));
+    let crawled = report["stats"]["pages_crawled"].as_u64().unwrap();
+    assert!(
+        (1..6).contains(&crawled),
+        "crawled {crawled} of the six-page chain"
+    );
+    assert_eq!(report["pages"].as_array().map(Vec::len), Some(crawled as usize));
+}
+
+#[test]
+fn seed_scope_and_url_length_rejections_have_distinct_exit_codes() {
+    // A seed outside the configured include prefix is an invalid policy (3)...
+    let excluded = run(&[
+        "https://example.com/blog",
+        "--include-path-prefix",
+        "/docs",
+        "--dry-run",
+    ]);
+    assert_eq!(excluded.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&excluded.stderr);
+    assert!(
+        stderr.contains("seed URL is excluded by the configured scope policy"),
+        "got: {stderr}"
+    );
+
+    // ...while an over-long seed trips a resource budget, which is fatal (1)
+    // even though the URL itself parsed cleanly.
+    let long = format!("https://example.com/{}", "a".repeat(8_300));
+    let oversized = run(&[&long, "--dry-run"]);
+    assert_eq!(oversized.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&oversized.stderr);
+    assert!(
+        stderr.contains("resource budget exhausted: url_length limit 8192"),
+        "got: {stderr}"
+    );
+}
+
+#[test]
+fn policy_flag_aliases_map_to_exact_plan_values() {
+    let output = run(&[
+        "https://example.com/docs",
+        "--dry-run",
+        "--compact",
+        "--allow-cross-domain",
+        "--raw-path-prefix",
+        "--ignore-robots",
+        "--include-query-values",
+        "--max-links-per-page",
+        "12",
+        "--max-robots-delay",
+        "30s",
+        "--max-robots-bytes",
+        "600KiB",
+        "--max-robots-redirects",
+        "6",
+        "--max-redirects",
+        "9",
+        "--retry-base-delay",
+        "50ms",
+        "--retry-max-delay",
+        "2s",
+        "--ignore-retry-after",
+        "--max-crawl-duration",
+        "9m",
+        "--max-unique-origins",
+        "3",
+        "--max-frontier-entries",
+        "40",
+        "--max-url-length",
+        "1000",
+        "--max-http-requests",
+        "77",
+        "--max-total-download-bytes",
+        "10MiB",
+        "--max-report-bytes",
+        "1MiB",
+        "--dns-timeout",
+        "3s",
+        "--allow-private-networks",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Scope flag aliases select their boundary and matching mode.
+    assert_eq!(plan["config"]["scope"]["boundary"], "any");
+    assert_eq!(plan["config"]["scope"]["path_match_mode"], "raw_prefix");
+    assert_eq!(plan["config"]["scope"]["max_redirects"], 9);
+    // Robots opt-out and floors survive into the plan.
+    assert_eq!(plan["config"]["robots"]["respect"], false);
+    assert_eq!(plan["config"]["robots"]["max_delay_ms"], 30_000);
+    assert_eq!(plan["config"]["robots"]["max_redirects"], 6);
+    assert_eq!(plan["config"]["limits"]["max_robots_bytes"], 614_400);
+    // The --max-links-per-page alias feeds the enqueue bound.
+    assert_eq!(plan["config"]["traversal"]["max_links_to_enqueue"], 12);
+    // Retry knobs, including the Retry-After opt-out.
+    assert_eq!(plan["config"]["retry"]["base_delay_ms"], 50);
+    assert_eq!(plan["config"]["retry"]["max_delay_ms"], 2_000);
+    assert_eq!(plan["config"]["retry"]["honor_retry_after"], false);
+    // The remaining resource limits round-trip exactly.
+    assert_eq!(plan["config"]["limits"]["max_crawl_duration_ms"], 540_000);
+    assert_eq!(plan["config"]["limits"]["max_unique_origins"], 3);
+    assert_eq!(plan["config"]["limits"]["max_frontier_entries"], 40);
+    assert_eq!(plan["config"]["limits"]["max_url_length"], 1_000);
+    assert_eq!(plan["config"]["limits"]["max_http_requests"], 77);
+    assert_eq!(
+        plan["config"]["limits"]["max_total_download_bytes"],
+        10_485_760
+    );
+    assert_eq!(plan["config"]["limits"]["max_report_bytes"], 1_048_576);
+    // Network switches and the query-value disclosure opt-in.
+    assert_eq!(plan["config"]["network"]["deny_non_global"], false);
+    assert_eq!(plan["config"]["network"]["dns_timeout_ms"], 3_000);
+    assert_eq!(plan["config"]["output"]["redact_query_values"], false);
+}
+
+fn chain_site() -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        for _ in 0..6 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..size]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_ascii_whitespace().nth(1))
+                .unwrap_or("/");
+            let next = match path {
+                "/" => Some("/a"),
+                "/a" => Some("/b"),
+                "/b" => Some("/c"),
+                "/c" => Some("/d"),
+                "/d" => Some("/e"),
+                _ => None,
+            };
+            let body = match next {
+                Some(next) => format!("<article><h1>hop</h1></article><a href='{next}'>next</a>"),
+                None => "<article><h1>end</h1><p>chain end</p></article>".to_string(),
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{address}/"), handle)
+}
+
 fn healthy_site() -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

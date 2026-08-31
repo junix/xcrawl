@@ -255,6 +255,12 @@ async fn redirect_into_an_excluded_path_is_rejected_before_request() {
         report.failures[0].error.kind,
         xcrawl::FailureKind::RedirectDenied
     );
+    // The WithinCrawlScope denial names its reason, not just its kind.
+    assert!(
+        report.failures[0].error.message.contains("is outside crawl scope"),
+        "got: {}",
+        report.failures[0].error.message
+    );
 }
 
 #[tokio::test]
@@ -806,4 +812,235 @@ async fn the_page_budget_truncates_scheduling_without_failing() {
     // Both crawled pages still had their links analyzed and discovered.
     assert_eq!(report.stats.urls_discovered, 2);
     assert_eq!(report.stats.urls_filtered, 0);
+}
+
+#[tokio::test]
+async fn the_unique_origin_budget_denies_the_second_origin_by_name() {
+    let b_hits = Arc::new(AtomicUsize::new(0));
+    let (other, other_server) = serve({
+        let b_hits = Arc::clone(&b_hits);
+        Arc::new(move |path| match path {
+            "/deep" => {
+                b_hits.fetch_add(1, Ordering::SeqCst);
+                Reply::ok("<article>off-origin</article>")
+            }
+            _ => Reply::status("404 Not Found"),
+        })
+    })
+    .await;
+    let off_origin = other.join("deep").unwrap();
+    let (seed, seed_server) = serve(Arc::new({
+        let off_origin = off_origin.clone();
+        move |_| Reply::ok(format!("<a href='{off_origin}'>off-origin</a>"))
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.scope.boundary = ScopeBoundary::Any;
+    config.limits.max_unique_origins = 1;
+    config.limits.max_pages = 5;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    seed_server.abort();
+    other_server.abort();
+
+    // The seed origin spent the only origin slot, so the second origin is
+    // denied before any request leaves, and the crawl degrades to partial.
+    assert_eq!(report.outcome, CrawlOutcome::Partial);
+    assert_eq!(b_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(report.stats.pages_crawled, 1);
+    assert_eq!(report.stats.unique_origins, 1);
+    assert_eq!(report.stats.http_requests, 1);
+    let failure = &report.failures[0];
+    assert_eq!(failure.url.as_str(), off_origin.as_str());
+    assert_eq!(failure.depth, 1);
+    assert_eq!(failure.error.kind, xcrawl::FailureKind::ResourceBudget);
+    assert_eq!(
+        failure.error.message,
+        "resource budget exhausted: unique_origins limit 1"
+    );
+    // The denial happens while reserving the attempt, so zero were used.
+    assert_eq!(failure.error.attempts, 0);
+}
+
+#[tokio::test]
+async fn an_oversized_content_length_is_rejected_before_streaming() {
+    let body = format!("<article>{}</article>", "x".repeat(100));
+    let (seed, server) = serve(Arc::new(move |_| Reply::ok(body.clone()))).await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.limits.max_response_bytes = 32;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    // Content-Length is checked before the body stream is opened, so not a
+    // single payload byte is charged against the download budget.
+    assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
+    let failure = &report.failures[0].error;
+    assert_eq!(failure.kind, xcrawl::FailureKind::ResourceBudget);
+    assert_eq!(
+        failure.message,
+        "resource budget exhausted: response_bytes limit 32"
+    );
+    assert_eq!(failure.attempts, 1);
+    assert_eq!(report.stats.http_requests, 1);
+    assert_eq!(report.stats.downloaded_bytes, 0);
+}
+
+#[tokio::test]
+async fn robots_crawl_delay_paces_page_requests() {
+    let page_times = Arc::new(Mutex::new(Vec::<Instant>::new()));
+    let (seed, server) = serve({
+        let page_times = Arc::clone(&page_times);
+        Arc::new(move |path| {
+            if path != "/robots.txt" {
+                page_times.lock().unwrap().push(Instant::now());
+            }
+            match path {
+                "/robots.txt" => Reply::ok("User-agent: *\nCrawl-delay: 0.15\nAllow: /\n"),
+                "/" => Reply::ok("<a href='/two'>two</a>"),
+                _ => Reply::ok("<article><h1>second</h1><p>page</p></article>"),
+            }
+        })
+    })
+    .await;
+    let mut config = local_config();
+    config.limits.max_pages = 2;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    let times = page_times.lock().unwrap();
+    assert_eq!(times.len(), 2);
+    // default_delay is zero here, so any pacing must come from the parsed
+    // Crawl-delay: 0.15 directive.
+    let interval = times[1].duration_since(times[0]);
+    assert!(
+        interval >= Duration::from_millis(100),
+        "Crawl-delay did not pace the second page request: {interval:?}"
+    );
+}
+
+#[tokio::test]
+async fn retry_after_header_gates_the_second_attempt() {
+    let times = Arc::new(Mutex::new(Vec::<Instant>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let (seed, server) = serve({
+        let times = Arc::clone(&times);
+        let attempts = Arc::clone(&attempts);
+        Arc::new(move |_| {
+            times.lock().unwrap().push(Instant::now());
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Reply {
+                    headers: vec![("Retry-After".into(), "1".into())],
+                    ..Reply::status("503 Service Unavailable")
+                }
+            } else {
+                Reply::ok("<article><h1>ok</h1><p>after retry-after</p></article>")
+            }
+        })
+    })
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.retry.max_attempts = 2;
+    config.retry.base_delay = Duration::from_millis(1);
+    config.retry.max_delay = Duration::from_millis(100);
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    assert!(report.failures.is_empty());
+    let times = times.lock().unwrap();
+    assert_eq!(times.len(), 2);
+    // Retry-After: 1 is one wall-clock second, and both the retry backoff
+    // and the origin throttle honor it, so the second attempt cannot start
+    // early even though retry.max_delay is only 100ms.
+    let interval = times[1].duration_since(times[0]);
+    assert!(
+        interval >= Duration::from_millis(900),
+        "second attempt started after {interval:?}"
+    );
+}
+
+#[tokio::test]
+async fn origin_scope_admits_only_the_exact_seed_origin() {
+    let b_hits = Arc::new(AtomicUsize::new(0));
+    let (other, other_server) = serve({
+        let b_hits = Arc::clone(&b_hits);
+        Arc::new(move |path| {
+            b_hits.fetch_add(1, Ordering::SeqCst);
+            Reply::ok(format!("<article>{path}</article>"))
+        })
+    })
+    .await;
+    let other_port = other.port().unwrap();
+    let (seed, seed_server) = serve(Arc::new(move |path| match path {
+        "/" => Reply::ok(format!(
+            "<a href='/ok'>same origin</a>\
+             <a href='http://127.0.0.1:{other_port}/x'>same host, other port</a>\
+             <a href='http://localhost:{other_port}/y'>other host</a>"
+        )),
+        _ => Reply::ok("<article><h1>inside</h1><p>the seed origin</p></article>"),
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.scope.boundary = ScopeBoundary::Origin;
+    config.limits.max_pages = 5;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    seed_server.abort();
+    other_server.abort();
+
+    // The default boundary is the exact seed origin: the same host on
+    // another port and a different host name are both filtered before any
+    // request is made.
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    assert_eq!(b_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(report.stats.pages_crawled, 2);
+    assert_eq!(report.stats.urls_discovered, 3);
+    assert_eq!(report.stats.urls_filtered, 2);
+    assert_eq!(report.stats.unique_origins, 1);
+    assert_eq!(report.pages.len(), 2);
+}
+
+#[tokio::test]
+async fn a_crawl_that_outlives_its_deadline_reports_the_reason() {
+    let (seed, server) = serve(Arc::new(|path| {
+        let next = match path {
+            "/" => "/a",
+            "/a" => "/b",
+            "/b" => "/c",
+            "/c" => "/d",
+            _ => return Reply::ok("<article><h1>end</h1><p>chain end</p></article>"),
+        };
+        Reply::ok(format!("<article><h1>hop</h1></article><a href='{next}'>next</a>"))
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.traversal.default_delay = Duration::from_millis(120);
+    config.traversal.max_depth = 5;
+    config.limits.max_pages = 10;
+    config.limits.max_crawl_duration = Duration::from_millis(300);
+    config.limits.max_attempt_duration = Duration::from_millis(250);
+    config.network.dns_timeout = Duration::from_millis(100);
+    config.retry.max_delay = Duration::from_millis(50);
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    // The deadline is a terminal outcome in its own right: pages that did
+    // land are kept, nothing is reported as failed, and the reason names
+    // the deadline rather than an anonymous truncation.
+    assert_eq!(report.outcome, CrawlOutcome::DeadlineExceeded);
+    assert_eq!(
+        report.termination_reason.as_deref(),
+        Some("crawl deadline exceeded")
+    );
+    assert!(report.failures.is_empty());
+    assert!(!report.pages.is_empty());
+    assert!(
+        report.stats.pages_crawled < 6,
+        "the chain has six pages; the crawl should have been cut short after {}",
+        report.stats.pages_crawled
+    );
 }

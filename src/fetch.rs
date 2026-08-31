@@ -597,6 +597,11 @@ mod tests {
                 PortPolicy::WebOnly,
                 "network target denied: TCP port 8080 is denied by policy",
             ),
+            (
+                "http://example.com:9090/",
+                PortPolicy::Explicit(vec![8080]),
+                "network target denied: TCP port 9090 is denied by policy",
+            ),
         ] {
             let policy = NetworkPolicy {
                 allowed_ports: ports,
@@ -727,5 +732,71 @@ mod tests {
             );
         }
         assert!(!is_decodable_content_type(None));
+    }
+
+    #[derive(Debug)]
+    struct Chained {
+        message: String,
+        next: Option<Box<Chained>>,
+    }
+
+    impl Chained {
+        fn chain(messages: &[&str]) -> Self {
+            messages
+                .iter()
+                .rev()
+                .fold(None, |next: Option<Box<Chained>>, message| {
+                    Some(Box::new(Chained {
+                        message: (*message).to_string(),
+                        next,
+                    }))
+                })
+                .map(|boxed| *boxed)
+                .expect("a chain has at least one message")
+        }
+    }
+
+    impl fmt::Display for Chained {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl StdError for Chained {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            self.next
+                .as_deref()
+                .map(|next| next as &(dyn StdError + 'static))
+        }
+    }
+
+    #[test]
+    fn error_chains_redact_credential_markers_and_truncate() {
+        // The walk starts below the top error, so the head message never
+        // reaches the diagnostic, and nested causes join with ": ".
+        let clean = Chained::chain(&["request failed", "connect failed", "tls aborted"]);
+        assert_eq!(
+            safe_error_message(&clean),
+            "connect failed: tls aborted"
+        );
+        // Repeated nested messages collapse instead of echoing.
+        assert_eq!(safe_error_message(&Chained::chain(&["head", "dup", "dup"])), "dup");
+        // No nested cause falls back to a generic message.
+        assert_eq!(
+            safe_error_message(&Chained::chain(&["lonely"])),
+            "request failed"
+        );
+        // Credential-like markers anywhere in the chain replace the text.
+        for marker in ["authorization", "cookie", "token", "api_key", "api-key"] {
+            let leaky = Chained::chain(&["outer", &format!("prefix {marker} suffix")]);
+            assert_eq!(
+                safe_error_message(&leaky),
+                "network error contained credential-like data",
+                "{marker}"
+            );
+        }
+        // Diagnostics are bounded at 500 characters.
+        let long = Chained::chain(&["outer", &"x".repeat(600)]);
+        assert_eq!(safe_error_message(&long).chars().count(), 500);
     }
 }
