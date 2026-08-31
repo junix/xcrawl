@@ -186,6 +186,21 @@ fn malformed_flag_values_exit_2_as_usage_errors() {
         ),
         ("--strategy", "lateral", "invalid value 'lateral'"),
         ("--max-pages", "many", "invalid value 'many'"),
+        (
+            "--delay",
+            "xs",
+            "invalid duration value: xs",
+        ),
+        (
+            "--delay",
+            "18446744073709551615m",
+            "duration is too large: 18446744073709551615m",
+        ),
+        (
+            "--max-response-bytes",
+            "18446744073709551615KiB",
+            "byte size is too large: 18446744073709551615KiB",
+        ),
     ] {
         let output = run(&["https://example.com", "--dry-run", flag, value]);
         assert_eq!(
@@ -199,6 +214,101 @@ fn malformed_flag_values_exit_2_as_usage_errors() {
             "{flag} {value}: got {stderr}"
         );
     }
+}
+
+#[test]
+fn byte_size_units_decode_decimal_binary_and_unitless_values() {
+    for (flag, value, field, expected) in [
+        // "MB" is the decimal unit and must win over the bare "b" suffix.
+        (
+            "--max-response-bytes",
+            "5MB",
+            "max_response_bytes",
+            5_000_000_u64,
+        ),
+        (
+            "--max-report-bytes",
+            "3GB",
+            "max_report_bytes",
+            3_000_000_000_u64,
+        ),
+        // A value without a unit is already a byte count.
+        (
+            "--max-response-bytes",
+            "2048",
+            "max_response_bytes",
+            2_048_u64,
+        ),
+    ] {
+        let output = run(&["https://example.com", "--dry-run", "--compact", flag, value]);
+        assert!(
+            output.status.success(),
+            "{flag} {value}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(plan["config"]["limits"][field], expected, "{flag} {value}");
+    }
+}
+
+#[test]
+fn denied_seed_targets_and_retry_overflow_keep_their_exit_codes_apart() {
+    // 255 retries + the initial attempt does not fit u8.
+    let overflow = run(&["https://example.com", "--max-retries", "255", "--dry-run"]);
+    assert_eq!(overflow.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&overflow.stderr);
+    assert!(stderr.contains("max_retries is too large"), "got: {stderr}");
+
+    let non_web = run(&["ftp://example.com/", "--dry-run"]);
+    assert_eq!(non_web.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&non_web.stderr);
+    assert!(
+        stderr.contains("only http and https URLs are supported"),
+        "got: {stderr}"
+    );
+
+    // A policy-denied TCP port is a network denial (4), not an invalid
+    // policy (3), even though the flag parsed cleanly.
+    let denied_port = run(&["http://example.com:8080/", "--dry-run"]);
+    assert_eq!(denied_port.status.code(), Some(4));
+    let stderr = String::from_utf8_lossy(&denied_port.stderr);
+    assert!(
+        stderr.contains("network target denied: TCP port 8080 is denied by policy"),
+        "got: {stderr}"
+    );
+}
+
+#[test]
+fn a_complete_crawl_exits_zero_and_pretty_prints_without_compact() {
+    let (url, _server) = healthy_site();
+    let output = run(&[
+        &url,
+        "--ignore-robots",
+        "--allow-private-networks",
+        "--allow-nonstandard-ports",
+        "--max-retries",
+        "0",
+        "--delay",
+        "0ms",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // Without --compact the report is pretty-printed with one field per line;
+    // the compact form is asserted in the JSON Lines test.
+    assert!(stdout.starts_with("{\n"), "not pretty: {stdout}");
+    assert!(stdout.contains("\n  \"outcome\""), "not pretty: {stdout}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(report["outcome"], "complete");
+    assert_eq!(report["stats"]["pages_crawled"], 2);
+    assert_eq!(report["pages"].as_array().map(Vec::len), Some(2));
+    assert_eq!(report["failures"].as_array().map(Vec::len), Some(0));
 }
 
 #[test]
@@ -283,6 +393,9 @@ fn partial_requires_an_explicit_allow_partial_override() {
 fn jsonl_is_the_default_and_broken_pipe_is_successful_cancellation() {
     let output = run(&["https://example.com", "--dry-run", "--compact"]);
     assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // --compact keeps the whole plan on a single line.
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_xcrawl"))
         .args([
@@ -310,6 +423,40 @@ fn jsonl_is_the_default_and_broken_pipe_is_successful_cancellation() {
         let _ = stream.read_to_string(&mut diagnostics);
     }
     assert!(!diagnostics.contains("error:"), "{diagnostics}");
+}
+
+fn healthy_site() -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut request = [0_u8; 4096];
+            let size = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..size]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_ascii_whitespace().nth(1))
+                .unwrap_or("/");
+            let (status, body) = if path == "/" {
+                (
+                    "200 OK",
+                    "<article><h1>root</h1><p>root body</p></article><a href='/good'>good</a>",
+                )
+            } else {
+                ("200 OK", "<article><h1>good</h1><p>good body</p></article>")
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{address}/"), handle)
 }
 
 fn partial_site() -> (String, thread::JoinHandle<()>) {
