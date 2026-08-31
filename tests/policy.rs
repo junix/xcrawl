@@ -146,6 +146,12 @@ async fn every_redirect_target_gets_its_own_robots_decision() {
     assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
     assert_eq!(robots_hits.load(Ordering::SeqCst), 1);
     assert_eq!(target_hits.load(Ordering::SeqCst), 0);
+    // The seed failure is the robots denial of the redirect target itself.
+    assert_eq!(
+        report.failures[0].error.kind,
+        xcrawl::FailureKind::RobotsDenied
+    );
+    assert!(report.failures[0].error.message.contains("/denied"));
 }
 
 #[tokio::test]
@@ -548,4 +554,256 @@ async fn redirect_budget_message_names_the_hop_limit() {
     // The concrete hop cap, not an anonymous "budget exhausted"
     // (dsh web-fetch-http provider.ts:64-67 wording).
     assert_eq!(failure.message, "exceeded the maximum of 2 redirects");
+}
+
+#[tokio::test]
+async fn nofollow_links_are_filtered_unless_following_is_enabled() {
+    for follow in [false, true] {
+        let followed_hits = Arc::new(AtomicUsize::new(0));
+        let skipped_hits = Arc::new(AtomicUsize::new(0));
+        let (seed, server) = serve({
+            let followed_hits = Arc::clone(&followed_hits);
+            let skipped_hits = Arc::clone(&skipped_hits);
+            Arc::new(move |path| match path {
+                "/" => Reply::ok(
+                    "<a href='/followed'>plain</a><a href='/skipped' rel='nofollow'>skipped</a>",
+                ),
+                "/followed" => {
+                    followed_hits.fetch_add(1, Ordering::SeqCst);
+                    Reply::ok("<article>followed page</article>")
+                }
+                "/skipped" => {
+                    skipped_hits.fetch_add(1, Ordering::SeqCst);
+                    Reply::ok("<article>must not be fetched</article>")
+                }
+                _ => Reply::status("404 Not Found"),
+            })
+        })
+        .await;
+        let mut config = local_config();
+        config.robots.respect = false;
+        config.traversal.follow_nofollow = follow;
+        config.limits.max_pages = 5;
+        let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+        server.abort();
+
+        assert_eq!(report.outcome, CrawlOutcome::Complete, "follow={follow}");
+        assert_eq!(followed_hits.load(Ordering::SeqCst), 1, "follow={follow}");
+        if follow {
+            assert_eq!(skipped_hits.load(Ordering::SeqCst), 1);
+            assert_eq!(report.stats.pages_crawled, 3);
+            // Nothing was filtered: both links were scheduled.
+            assert_eq!(report.stats.urls_filtered, 0);
+        } else {
+            // The rel=nofollow link is skipped at enqueue time: no request,
+            // no page record, and exactly one filtered URL.
+            assert_eq!(skipped_hits.load(Ordering::SeqCst), 0);
+            assert_eq!(report.stats.pages_crawled, 2);
+            assert_eq!(report.stats.urls_filtered, 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn zero_depth_crawls_only_the_seed_but_still_reports_its_links() {
+    let deeper_hits = Arc::new(AtomicUsize::new(0));
+    let (seed, server) = serve({
+        let deeper_hits = Arc::clone(&deeper_hits);
+        Arc::new(move |path| match path {
+            "/" => Reply::ok("<a href='/deeper'>deeper</a>"),
+            "/deeper" => {
+                deeper_hits.fetch_add(1, Ordering::SeqCst);
+                Reply::ok("<article>must not be fetched</article>")
+            }
+            _ => Reply::status("404 Not Found"),
+        })
+    })
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.traversal.max_depth = 0;
+    config.limits.max_pages = 5;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    assert_eq!(deeper_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(report.stats.pages_crawled, 1);
+    // The link was still analyzed and counted as discovered...
+    assert_eq!(report.stats.urls_discovered, 1);
+    // ...but the depth gate is not a filter: nothing was rejected.
+    assert_eq!(report.stats.urls_filtered, 0);
+    assert_eq!(report.pages.len(), 1);
+    assert_eq!(report.pages[0].links.len(), 1);
+    assert!(!report.pages[0].links_truncated);
+}
+
+#[tokio::test]
+async fn pages_collapsing_to_one_resource_are_crawled_once() {
+    let c_hits = Arc::new(AtomicUsize::new(0));
+    let (seed, server) = serve({
+        let c_hits = Arc::clone(&c_hits);
+        Arc::new(move |path| match path {
+            "/" => Reply::ok("<a href='/a'>a</a><a href='/b'>b</a>"),
+            "/a" | "/b" => Reply {
+                status: "302 Found",
+                headers: vec![("Location".into(), "/c".into())],
+                body: String::new(),
+                delay: Duration::ZERO,
+                close_without_response: false,
+            },
+            "/c" => {
+                c_hits.fetch_add(1, Ordering::SeqCst);
+                Reply::ok("<article>shared target</article>")
+            }
+            _ => Reply::status("404 Not Found"),
+        })
+    })
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    // Sequential scheduling keeps the BFS order deterministic: /a before /b.
+    config.traversal.concurrency = 1;
+    config.limits.max_pages = 5;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    // Both redirects were fetched: dedupe happens on the final resource, not
+    // on the request line, so the target server sees two hits.
+    assert_eq!(c_hits.load(Ordering::SeqCst), 2);
+    assert_eq!(report.stats.pages_crawled, 2);
+    assert_eq!(report.stats.urls_filtered, 1);
+    assert_eq!(report.pages.len(), 2);
+    assert!(report.failures.is_empty());
+    let collapsed = &report.pages[1];
+    assert_eq!(collapsed.requested_url.path(), "/a");
+    assert_eq!(collapsed.final_url.path(), "/c");
+    assert_eq!(collapsed.redirect_chain.len(), 1);
+    assert_eq!(collapsed.redirect_chain[0].path(), "/c");
+}
+
+#[tokio::test]
+async fn query_values_are_redacted_in_reports_but_fetched_verbatim() {
+    let seen_targets = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (base, server) = serve({
+        let seen_targets = Arc::clone(&seen_targets);
+        Arc::new(move |raw| {
+            seen_targets.lock().unwrap().push(raw.to_string());
+            match raw.split('?').next().unwrap_or_default() {
+                "/" => Reply::ok("<a href='/leak?session=42&ok=1'>leak</a>"),
+                "/leak" => Reply::ok("<article>linked page</article>"),
+                _ => Reply::status("404 Not Found"),
+            }
+        })
+    })
+    .await;
+    let seed = base.join("?token=abc").unwrap();
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.output.redact_query_values = true;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    assert_eq!(report.pages.len(), 2);
+    // Keys survive, values are redacted, in the requested URL, the reported
+    // link, and the crawled link page.
+    assert_eq!(
+        report.pages[0].requested_url.query(),
+        Some("token=REDACTED")
+    );
+    assert_eq!(
+        report.pages[0].links[0].url.query(),
+        Some("session=REDACTED&ok=REDACTED")
+    );
+    assert_eq!(
+        report.pages[1].requested_url.query(),
+        Some("session=REDACTED&ok=REDACTED")
+    );
+    // Redaction is display-only: the wire saw the exact query strings.
+    let seen = seen_targets.lock().unwrap();
+    assert!(seen.contains(&"/?token=abc".to_string()), "{seen:?}");
+    assert!(
+        seen.contains(&"/leak?session=42&ok=1".to_string()),
+        "{seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn domain_scope_admits_the_same_host_on_other_ports_only() {
+    let b_hits = Arc::new(AtomicUsize::new(0));
+    let (other, other_server) = serve({
+        let b_hits = Arc::clone(&b_hits);
+        Arc::new(move |path| match path {
+            "/b-ok" => {
+                b_hits.fetch_add(1, Ordering::SeqCst);
+                Reply::ok("<article>same host, other port</article>")
+            }
+            _ => Reply::status("404 Not Found"),
+        })
+    })
+    .await;
+    let other_port = other.port().unwrap();
+    let (seed, seed_server) = serve(Arc::new({
+        let other = other.clone();
+        move |_| {
+            Reply::ok(format!(
+                "<a href='{other}b-ok'>same host</a>\
+                 <a href='http://localhost:{other_port}/nope'>other host</a>"
+            ))
+        }
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.scope.boundary = ScopeBoundary::Domain;
+    config.limits.max_pages = 5;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    seed_server.abort();
+    other_server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    // Same host on another port is inside the domain boundary...
+    assert_eq!(b_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(report.stats.pages_crawled, 2);
+    assert_eq!(report.stats.urls_discovered, 2);
+    // ...while a different host name on the same machine is filtered before
+    // any request is made.
+    assert_eq!(report.stats.urls_filtered, 1);
+    assert_eq!(report.stats.unique_origins, 2);
+}
+
+#[tokio::test]
+async fn the_page_budget_truncates_scheduling_without_failing() {
+    let two_hits = Arc::new(AtomicUsize::new(0));
+    let (seed, server) = serve({
+        let two_hits = Arc::clone(&two_hits);
+        Arc::new(move |path| match path {
+            "/" => Reply::ok("<a href='/one'>one</a>"),
+            "/one" => Reply::ok("<a href='/two'>two</a>"),
+            "/two" => {
+                two_hits.fetch_add(1, Ordering::SeqCst);
+                Reply::ok("<article>must not be fetched</article>")
+            }
+            _ => Reply::status("404 Not Found"),
+        })
+    })
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.traversal.concurrency = 1;
+    config.traversal.max_depth = 5;
+    config.limits.max_pages = 2;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    // Hitting the page cap is a clean truncation, not a crawl failure.
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    assert_eq!(report.stats.pages_crawled, 2);
+    assert_eq!(report.pages.len(), 2);
+    assert_eq!(two_hits.load(Ordering::SeqCst), 0);
+    // Both crawled pages still had their links analyzed and discovered.
+    assert_eq!(report.stats.urls_discovered, 2);
+    assert_eq!(report.stats.urls_filtered, 0);
 }
