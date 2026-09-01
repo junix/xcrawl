@@ -115,6 +115,43 @@ fn dry_run_reports_the_grouped_effective_policy_without_network() {
 }
 
 #[test]
+fn the_default_dry_run_plan_pins_the_conservative_defaults() {
+    // No policy flags at all: the plan must show the locked-down posture.
+    let output = run(&["https://example.com", "--dry-run", "--compact"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Scope starts at the exact seed origin, with robots honored.
+    assert_eq!(plan["config"]["scope"]["boundary"], "origin");
+    assert_eq!(plan["config"]["scope"]["allow_subdomains"], false);
+    assert_eq!(plan["config"]["scope"]["path_match_mode"], "segment_prefix");
+    assert_eq!(
+        plan["config"]["scope"]["redirect_policy"],
+        "within_crawl_scope"
+    );
+    assert_eq!(plan["config"]["scope"]["allow_https_downgrade"], false);
+    assert_eq!(plan["config"]["scope"]["max_redirects"], 5);
+    assert_eq!(plan["config"]["robots"]["respect"], true);
+    // Traversal is breadth-first with one request per origin at a time.
+    assert_eq!(plan["config"]["traversal"]["strategy"], "breadth_first");
+    assert_eq!(plan["config"]["traversal"]["max_depth"], 2);
+    assert_eq!(plan["config"]["traversal"]["concurrency"], 8);
+    assert_eq!(plan["config"]["traversal"]["max_origin_in_flight"], 1);
+    assert_eq!(plan["config"]["traversal"]["default_delay_ms"], 250);
+    // Retry defaults to three attempts that honor Retry-After.
+    assert_eq!(plan["config"]["retry"]["max_attempts"], 3);
+    assert_eq!(plan["config"]["retry"]["honor_retry_after"], true);
+    // The default network posture denies private ranges and redacts queries.
+    assert_eq!(plan["config"]["network"]["deny_non_global"], true);
+    assert_eq!(plan["config"]["output"]["redact_query_values"], true);
+    assert_eq!(plan["config"]["limits"]["max_pages"], 100);
+    assert_eq!(plan["config"]["limits"]["max_http_requests"], 1_000);
+}
+
+#[test]
 fn invalid_policy_and_credentialed_seed_fail_without_leaking_secrets() {
     let invalid_policy = run(&["https://example.com", "--concurrency", "0", "--dry-run"]);
     assert_eq!(invalid_policy.status.code(), Some(3));
@@ -214,6 +251,16 @@ fn malformed_flag_values_exit_2_as_usage_errors() {
             "{flag} {value}: got {stderr}"
         );
     }
+
+    // A seed that is not a URL at all is a usage error (2) from the value
+    // parser, not an invalid policy (3).
+    let output = run(&["notaurl", "--dry-run"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid value 'notaurl' for '<URL>'"),
+        "got: {stderr}"
+    );
 }
 
 #[test]
@@ -573,6 +620,7 @@ fn policy_flag_aliases_map_to_exact_plan_values() {
         "--compact",
         "--allow-cross-domain",
         "--raw-path-prefix",
+        "--allow-https-downgrade",
         "--ignore-robots",
         "--include-query-values",
         "--max-links-per-page",
@@ -617,6 +665,7 @@ fn policy_flag_aliases_map_to_exact_plan_values() {
     // Scope flag aliases select their boundary and matching mode.
     assert_eq!(plan["config"]["scope"]["boundary"], "any");
     assert_eq!(plan["config"]["scope"]["path_match_mode"], "raw_prefix");
+    assert_eq!(plan["config"]["scope"]["allow_https_downgrade"], true);
     assert_eq!(plan["config"]["scope"]["max_redirects"], 9);
     // Robots opt-out and floors survive into the plan.
     assert_eq!(plan["config"]["robots"]["respect"], false);

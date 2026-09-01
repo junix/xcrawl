@@ -7,7 +7,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use url::Url;
 use xcrawl::{
-    CrawlConfig, CrawlOutcome, Crawler, PortPolicy, RedirectPolicy, RobotsDecision, ScopeBoundary,
+    CrawlConfig, CrawlError, CrawlOutcome, Crawler, PageAnalysis, PageAnalyzer, PageInput,
+    PortPolicy, ReadabilitiesAnalyzer, RedirectPolicy, RobotsDecision, ScopeBoundary,
 };
 
 #[derive(Clone)]
@@ -220,6 +221,60 @@ async fn robots_404_is_unavailable_and_allows_the_page() {
 }
 
 #[tokio::test]
+async fn robots_redirect_loops_fail_closed_after_the_hop_budget() {
+    let page_hits = Arc::new(AtomicUsize::new(0));
+    let (seed, server) = serve({
+        let page_hits = Arc::clone(&page_hits);
+        Arc::new(move |path| match path {
+            // The robots fetch is one-hop, so a self-referencing Location is
+            // followed manually until the redirect budget is spent.
+            "/robots.txt" => Reply {
+                status: "302 Found",
+                headers: vec![("Location".into(), "/robots.txt".into())],
+                body: String::new(),
+                delay: Duration::ZERO,
+                close_without_response: false,
+            },
+            "/" => {
+                page_hits.fetch_add(1, Ordering::SeqCst);
+                Reply::ok("<article>must not be fetched</article>")
+            }
+            _ => Reply::status("404 Not Found"),
+        })
+    })
+    .await;
+    let report = Crawler::new(local_config())
+        .unwrap()
+        .crawl(&seed)
+        .await
+        .unwrap();
+    server.abort();
+
+    // The initial request plus five followed hops spend the robots budget...
+    assert_eq!(report.stats.http_requests, 6);
+    // ...the denial is fail-closed: the page itself was never requested...
+    assert_eq!(page_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
+    assert_eq!(
+        report.failures[0].error.kind,
+        xcrawl::FailureKind::RobotsDenied
+    );
+    // ...and the robots event names the redirect budget, not a generic error.
+    let robots_error = report
+        .events
+        .iter()
+        .find_map(|event| match event {
+            xcrawl::CrawlEvent::Robots { error, .. } => error.clone(),
+            _ => None,
+        })
+        .expect("a robots decision was recorded");
+    assert!(
+        robots_error.contains("exceeded the maximum of 5 redirects"),
+        "got: {robots_error}"
+    );
+}
+
+#[tokio::test]
 async fn redirect_into_an_excluded_path_is_rejected_before_request() {
     let private_hits = Arc::new(AtomicUsize::new(0));
     let (base, server) = serve({
@@ -392,6 +447,32 @@ async fn total_download_budget_is_enforced_while_streaming() {
 }
 
 #[tokio::test]
+async fn the_report_budget_stops_the_crawl_before_any_request() {
+    // Port 1 on localhost needs no server: the collected-report reservation
+    // happens before the crawl loop sends anything.
+    let seed = Url::parse("http://127.0.0.1:1/").unwrap();
+    let mut config = local_config();
+    config.limits.max_report_bytes = 512;
+    let error = Crawler::new(config)
+        .unwrap()
+        .crawl(&seed)
+        .await
+        .unwrap_err();
+    // The fixed collected-report overhead alone (1 KiB) exceeds the 512-byte
+    // cap, so the crawl aborts with the exact resource and limit named.
+    assert!(
+        matches!(
+            error,
+            CrawlError::ResourceBudget {
+                resource: "report_bytes",
+                limit: 512,
+            }
+        ),
+        "got: {error}"
+    );
+}
+
+#[tokio::test]
 async fn reported_links_are_bounded_and_total_is_preserved() {
     let links = (0..50).fold(String::new(), |mut output, index| {
         write!(output, "<a href='/p{index}'>p{index}</a>").unwrap();
@@ -497,6 +578,59 @@ async fn decodable_text_page_body_still_downloads() {
     assert_eq!(page.content_type.as_deref(), Some("text/plain"));
     assert_eq!(page.body_bytes, BODY.len());
     assert_eq!(report.stats.downloaded_bytes, page.body_bytes);
+}
+
+struct PanickyChildAnalyzer {
+    inner: ReadabilitiesAnalyzer,
+}
+
+impl PageAnalyzer for PanickyChildAnalyzer {
+    fn analyze(&self, page: PageInput) -> PageAnalysis {
+        if page.final_url.path() == "/child" {
+            panic!("analyzer exploded");
+        }
+        self.inner.analyze(page)
+    }
+}
+
+#[tokio::test]
+async fn a_panicking_analyzer_fails_only_that_page() {
+    let (seed, server) = serve(Arc::new(|path| match path {
+        "/" => Reply::ok("<a href='/child'>child</a>"),
+        _ => Reply::ok("<article><h1>child</h1><p>page</p></article>"),
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.limits.max_pages = 5;
+    let crawler = Crawler::with_analyzer(
+        config,
+        Arc::new(PanickyChildAnalyzer {
+            inner: ReadabilitiesAnalyzer::default(),
+        }),
+    )
+    .unwrap();
+    let report = crawler.crawl(&seed).await.unwrap();
+    server.abort();
+
+    // The panic is contained: the seed page still landed with its link...
+    assert_eq!(report.outcome, CrawlOutcome::Partial);
+    assert_eq!(report.stats.pages_crawled, 1);
+    assert_eq!(report.pages.len(), 1);
+    assert_eq!(report.pages[0].links.len(), 1);
+    // ...and the crashed page is reported as an analysis failure instead of
+    // aborting the whole crawl.
+    assert_eq!(report.failures.len(), 1);
+    let failure = &report.failures[0];
+    assert_eq!(failure.url.path(), "/child");
+    assert_eq!(failure.depth, 1);
+    assert_eq!(failure.error.kind, xcrawl::FailureKind::Analysis);
+    assert!(
+        failure.error.message.starts_with("page analysis failed:"),
+        "got: {}",
+        failure.error.message
+    );
+    assert_eq!(failure.error.retryable, false);
 }
 
 #[tokio::test]
@@ -960,6 +1094,108 @@ async fn retry_after_header_gates_the_second_attempt() {
         interval >= Duration::from_millis(900),
         "second attempt started after {interval:?}"
     );
+}
+
+#[tokio::test]
+async fn retry_after_is_ignored_when_the_operator_opts_out() {
+    let times = Arc::new(Mutex::new(Vec::<Instant>::new()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let (seed, server) = serve({
+        let times = Arc::clone(&times);
+        let attempts = Arc::clone(&attempts);
+        Arc::new(move |_| {
+            times.lock().unwrap().push(Instant::now());
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Reply {
+                    headers: vec![("Retry-After".into(), "1".into())],
+                    ..Reply::status("503 Service Unavailable")
+                }
+            } else {
+                Reply::ok("<article><h1>ok</h1><p>no retry-after wait</p></article>")
+            }
+        })
+    })
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.retry.max_attempts = 2;
+    config.retry.honor_retry_after = false;
+    config.retry.base_delay = Duration::from_millis(1);
+    config.retry.max_delay = Duration::from_millis(100);
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    assert!(report.failures.is_empty());
+    let times = times.lock().unwrap();
+    assert_eq!(times.len(), 2);
+    // The opt-out removes the one-second gate from both the retry backoff
+    // and the origin throttle: only the sub-100ms jitter backoff remains,
+    // where the honoring crawl waits the full second.
+    let interval = times[1].duration_since(times[0]);
+    assert!(
+        interval < Duration::from_millis(500),
+        "second attempt started after {interval:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_attempt_outliving_the_attempt_deadline_is_a_timeout_failure() {
+    let (seed, server) = serve(Arc::new(|_| Reply {
+        delay: Duration::from_millis(500),
+        ..Reply::ok("<article>too slow to arrive</article>")
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.retry.max_attempts = 1;
+    config.limits.max_attempt_duration = Duration::from_millis(150);
+    config.network.dns_timeout = Duration::from_millis(100);
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
+    let failure = &report.failures[0].error;
+    // The transport-level and per-attempt timers both map to the same
+    // timeout failure, whichever fires first.
+    assert_eq!(failure.kind, xcrawl::FailureKind::Timeout);
+    assert_eq!(failure.message, "request attempt timed out");
+    assert_eq!(failure.attempts, 1);
+    assert_eq!(failure.retryable, true);
+    assert_eq!(report.stats.http_requests, 1);
+    // The deadline fired while waiting for headers, so no body bytes were
+    // charged against the download budget.
+    assert_eq!(report.stats.downloaded_bytes, 0);
+}
+
+#[tokio::test]
+async fn exhausted_http_retries_report_every_attempt() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (seed, server) = serve({
+        let hits = Arc::clone(&hits);
+        Arc::new(move |_| {
+            hits.fetch_add(1, Ordering::SeqCst);
+            Reply::status("503 Service Unavailable")
+        })
+    })
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.retry.max_attempts = 3;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+
+    // All three allowed attempts hit the wire, and the failure reports the
+    // full count with the exact status-bearing message.
+    assert_eq!(hits.load(Ordering::SeqCst), 3);
+    assert_eq!(report.stats.http_requests, 3);
+    assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
+    let failure = &report.failures[0].error;
+    assert_eq!(failure.kind, xcrawl::FailureKind::HttpStatus);
+    assert_eq!(failure.status, Some(503));
+    assert_eq!(failure.message, format!("HTTP 503 returned for {seed}"));
+    assert_eq!(failure.attempts, 3);
+    assert_eq!(failure.retryable, true);
 }
 
 #[tokio::test]
