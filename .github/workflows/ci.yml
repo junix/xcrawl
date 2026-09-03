@@ -20,12 +20,12 @@ jobs:
         with:
           repository: junix/readabilities-rs
           path: readabilities/readabilities-rs
-      - name: Install declared MSRV
-        run: rustup toolchain install 1.85.0 --profile minimal --component clippy,rustfmt
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
       - name: Verify
         working-directory: xcrawl
         run: |
-          cargo +1.85.0 fmt --all -- --check
-          cargo +1.85.0 clippy --locked --all-targets -- -D warnings
-          cargo +1.85.0 test --locked --all-targets
-          cargo +1.85.0 build --locked
+          cargo +stable fmt --all -- --check
+          cargo +stable clippy --locked --all-targets -- -D warnings
+          cargo +stable test --locked --all-targets
+          cargo +stable build --locked
