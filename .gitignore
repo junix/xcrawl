@@ -26,3 +26,6 @@ perf.data.old
 *.orig
 # --- appended by gitignore-sweep on 2026-09-03 ---
 Cargo.lock
+
+# Generated caches, render slices, and numbered lint images (keep final PNG/PDF).
+/docs/infographics/architecture.lint.png
