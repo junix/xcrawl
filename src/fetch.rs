@@ -503,4 +503,3 @@ fn safe_error_message(error: &(dyn StdError + 'static)) -> String {
 #[cfg(test)]
 #[path = "fetch_tests.rs"]
 mod tests;
-

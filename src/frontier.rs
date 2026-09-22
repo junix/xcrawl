@@ -104,4 +104,3 @@ pub(crate) fn normalize_url(url: &Url) -> String {
 #[cfg(test)]
 #[path = "frontier_tests.rs"]
 mod tests;
-

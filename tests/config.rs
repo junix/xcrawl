@@ -5,16 +5,15 @@ use xcrawl::{CrawlConfig, PortPolicy};
 fn expect_invalid(name: &str, mutate: impl Fn(&mut CrawlConfig), expected: &str) {
     let mut config = CrawlConfig::default();
     mutate(&mut config);
-    let error = config
-        .validate()
-        .expect_err(name)
-        .to_string();
+    let error = config.validate().expect_err(name).to_string();
     assert_eq!(error, expected, "{name}");
 }
 
 #[test]
 fn the_default_config_is_valid() {
-    CrawlConfig::default().validate().expect("defaults validate");
+    CrawlConfig::default()
+        .validate()
+        .expect("defaults validate");
 }
 
 #[test]

@@ -87,10 +87,7 @@ fn sitemap_directives_are_collected_across_groups() {
     );
     assert_eq!(
         rules.sitemaps,
-        [
-            "https://a.test/sitemap.xml",
-            "https://b.test/sitemap.xml"
-        ]
+        ["https://a.test/sitemap.xml", "https://b.test/sitemap.xml"]
     );
     assert!(!rules.allowed("xcrawl", "/private/a"));
 }

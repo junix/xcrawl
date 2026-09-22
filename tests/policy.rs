@@ -312,7 +312,10 @@ async fn redirect_into_an_excluded_path_is_rejected_before_request() {
     );
     // The WithinCrawlScope denial names its reason, not just its kind.
     assert!(
-        report.failures[0].error.message.contains("is outside crawl scope"),
+        report.failures[0]
+            .error
+            .message
+            .contains("is outside crawl scope"),
         "got: {}",
         report.failures[0].error.message
     );
@@ -1249,7 +1252,9 @@ async fn a_crawl_that_outlives_its_deadline_reports_the_reason() {
             "/c" => "/d",
             _ => return Reply::ok("<article><h1>end</h1><p>chain end</p></article>"),
         };
-        Reply::ok(format!("<article><h1>hop</h1></article><a href='{next}'>next</a>"))
+        Reply::ok(format!(
+            "<article><h1>hop</h1></article><a href='{next}'>next</a>"
+        ))
     }))
     .await;
     let mut config = local_config();

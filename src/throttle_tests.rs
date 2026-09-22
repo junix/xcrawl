@@ -94,21 +94,14 @@ async fn retry_after_blocks_the_next_attempt() {
     scheduler.record_response("example:443", 503, Some(Duration::from_secs(3)));
     let start = Instant::now();
     drop(scheduler.acquire("example:443").await);
-    assert_eq!(
-        Instant::now().duration_since(start),
-        Duration::from_secs(3)
-    );
+    assert_eq!(Instant::now().duration_since(start), Duration::from_secs(3));
 }
 
 #[tokio::test(start_paused = true)]
 async fn retry_after_is_capped_at_sixty_seconds() {
     let scheduler = OriginScheduler::new(Duration::ZERO, 1);
     drop(scheduler.acquire("example:443").await);
-    scheduler.record_response(
-        "example:443",
-        503,
-        Some(Duration::from_secs(5 * 60)),
-    );
+    scheduler.record_response("example:443", 503, Some(Duration::from_secs(5 * 60)));
     let start = Instant::now();
     drop(scheduler.acquire("example:443").await);
     assert_eq!(

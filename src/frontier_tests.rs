@@ -90,7 +90,12 @@ async fn pop_order_follows_the_configured_strategy() {
             })
             .collect();
         assert_eq!(
-            frontier.enqueue_if_new(entries).await.unwrap().enqueued.len(),
+            frontier
+                .enqueue_if_new(entries)
+                .await
+                .unwrap()
+                .enqueued
+                .len(),
             3
         );
         for path in expected {

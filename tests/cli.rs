@@ -198,8 +198,7 @@ fn conflicting_scope_flags_fail_as_invalid_policy() {
         "got: {stderr}"
     );
 
-    let orphan_subdomains =
-        run(&["https://example.com", "--allow-subdomains", "--dry-run"]);
+    let orphan_subdomains = run(&["https://example.com", "--allow-subdomains", "--dry-run"]);
     assert_eq!(orphan_subdomains.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&orphan_subdomains.stderr);
     assert!(
@@ -211,23 +210,11 @@ fn conflicting_scope_flags_fail_as_invalid_policy() {
 #[test]
 fn malformed_flag_values_exit_2_as_usage_errors() {
     for (flag, value, expected_diagnostic) in [
-        (
-            "--delay",
-            "5x",
-            "expected a duration ending in ms, s, or m",
-        ),
-        (
-            "--max-response-bytes",
-            "12ZiB",
-            "invalid byte size: 12ZiB",
-        ),
+        ("--delay", "5x", "expected a duration ending in ms, s, or m"),
+        ("--max-response-bytes", "12ZiB", "invalid byte size: 12ZiB"),
         ("--strategy", "lateral", "invalid value 'lateral'"),
         ("--max-pages", "many", "invalid value 'many'"),
-        (
-            "--delay",
-            "xs",
-            "invalid duration value: xs",
-        ),
+        ("--delay", "xs", "invalid duration value: xs"),
         (
             "--delay",
             "18446744073709551615m",
@@ -508,7 +495,9 @@ fn the_default_jsonl_stream_emits_records_in_protocol_order() {
         .collect();
     assert_eq!(
         tags,
-        ["event", "event", "event", "page", "event", "event", "page", "event", "summary"],
+        [
+            "event", "event", "event", "page", "event", "event", "page", "event", "summary"
+        ],
         "{stdout}"
     );
     assert_eq!(records[0]["value"]["event"], "request");
@@ -581,7 +570,10 @@ fn a_deadline_crawl_exits_one_and_names_the_deadline() {
         (1..6).contains(&crawled),
         "crawled {crawled} of the six-page chain"
     );
-    assert_eq!(report["pages"].as_array().map(Vec::len), Some(crawled as usize));
+    assert_eq!(
+        report["pages"].as_array().map(Vec::len),
+        Some(crawled as usize)
+    );
 }
 
 #[test]

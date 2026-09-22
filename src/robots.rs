@@ -294,4 +294,3 @@ fn hex_digit(value: u8) -> char {
 #[cfg(test)]
 #[path = "robots_tests.rs"]
 mod tests;
-

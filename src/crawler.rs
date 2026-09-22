@@ -12,7 +12,7 @@ use url::Url;
 
 use crate::analyzer::{PageAnalyzer, PageInput, ReadabilitiesAnalyzer};
 use crate::budget::CrawlBudget;
-use crate::fetch::{origin_key, safe_url, validate_url, HopOutcome, HopResponse, OneHopTransport};
+use crate::fetch::{HopOutcome, HopResponse, OneHopTransport, origin_key, safe_url, validate_url};
 use crate::frontier::normalize_url;
 use crate::robots::{RobotsRules, RobotsState};
 use crate::throttle::OriginScheduler;
@@ -683,12 +683,12 @@ impl CrawlRuntime {
                     safe_url(url)
                 )))
             }
-            RedirectPolicy::SameOrigin if origin_key(url) != initial_origin => Err(
-                CrawlError::RedirectDenied(format!(
+            RedirectPolicy::SameOrigin if origin_key(url) != initial_origin => {
+                Err(CrawlError::RedirectDenied(format!(
                     "cross-origin redirect to {} is not followed automatically; retry against that URL directly",
                     origin_key(url)
-                )),
-            ),
+                )))
+            }
             _ => Ok(()),
         }
     }
@@ -1239,4 +1239,3 @@ fn millis(duration: Duration) -> u64 {
 #[cfg(test)]
 #[path = "crawler_tests.rs"]
 mod tests;
-

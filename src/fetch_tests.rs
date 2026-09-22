@@ -19,9 +19,11 @@ fn iana_non_global_ranges_and_embedded_ipv4_are_denied() {
     ] {
         assert!(guard().validate_ip(raw.parse().unwrap()).is_err(), "{raw}");
     }
-    assert!(guard()
-        .validate_ip("2606:4700:4700::1111".parse().unwrap())
-        .is_ok());
+    assert!(
+        guard()
+            .validate_ip("2606:4700:4700::1111".parse().unwrap())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -57,17 +59,21 @@ fn explicit_allow_and_deny_lists_beat_the_default_policy() {
         allowed_cidrs: vec!["10.0.0.0/8".parse().unwrap()],
         ..NetworkPolicy::default()
     };
-    assert!(NetworkGuard::new(allowed)
-        .validate_ip("10.1.2.3".parse().unwrap())
-        .is_ok());
+    assert!(
+        NetworkGuard::new(allowed)
+            .validate_ip("10.1.2.3".parse().unwrap())
+            .is_ok()
+    );
 
     let permissive = NetworkPolicy {
         deny_non_global: false,
         ..NetworkPolicy::default()
     };
-    assert!(NetworkGuard::new(permissive)
-        .validate_ip("10.1.2.3".parse().unwrap())
-        .is_ok());
+    assert!(
+        NetworkGuard::new(permissive)
+            .validate_ip("10.1.2.3".parse().unwrap())
+            .is_ok()
+    );
 }
 
 #[test]
@@ -114,10 +120,7 @@ fn validate_url_rejects_non_web_schemes_credentials_and_ports() {
         ("https://example.com/page", PortPolicy::WebOnly),
         ("http://example.com/", PortPolicy::WebOnly),
         ("http://example.com:8080/", PortPolicy::Any),
-        (
-            "http://example.com:8080/",
-            PortPolicy::Explicit(vec![8080]),
-        ),
+        ("http://example.com:8080/", PortPolicy::Explicit(vec![8080])),
     ] {
         let policy = NetworkPolicy {
             allowed_ports: ports,
@@ -130,10 +133,7 @@ fn validate_url_rejects_non_web_schemes_credentials_and_ports() {
 
 #[test]
 fn retry_after_accepts_seconds_and_http_dates_only() {
-    assert_eq!(
-        parse_retry_after("120"),
-        Some(Duration::from_secs(120))
-    );
+    assert_eq!(parse_retry_after("120"), Some(Duration::from_secs(120)));
     assert_eq!(parse_retry_after(" 42 "), Some(Duration::from_secs(42)));
     assert_eq!(parse_retry_after("0"), Some(Duration::ZERO));
     assert_eq!(
@@ -271,12 +271,12 @@ fn error_chains_redact_credential_markers_and_truncate() {
     // The walk starts below the top error, so the head message never
     // reaches the diagnostic, and nested causes join with ": ".
     let clean = Chained::chain(&["request failed", "connect failed", "tls aborted"]);
-    assert_eq!(
-        safe_error_message(&clean),
-        "connect failed: tls aborted"
-    );
+    assert_eq!(safe_error_message(&clean), "connect failed: tls aborted");
     // Repeated nested messages collapse instead of echoing.
-    assert_eq!(safe_error_message(&Chained::chain(&["head", "dup", "dup"])), "dup");
+    assert_eq!(
+        safe_error_message(&Chained::chain(&["head", "dup", "dup"])),
+        "dup"
+    );
     // No nested cause falls back to a generic message.
     assert_eq!(
         safe_error_message(&Chained::chain(&["lonely"])),
