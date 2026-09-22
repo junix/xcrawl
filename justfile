@@ -28,10 +28,15 @@ install:
     install_dir="${SYNC_BIN_DIR:-${HOME}/sync/${os_name}-${arch_name}-bin}"
     cargo build --release --locked
     mkdir -p "$install_dir"
-    cp target/release/xcrawl "$install_dir/xcrawl"
+    dest="$install_dir/xcrawl"
+    tmp="$(mktemp "${dest}.tmp.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    cp target/release/xcrawl "$tmp"
+    chmod +x "$tmp"
     if [[ "$os_name" == "macos" ]]; then
-      codesign --force --sign - "$install_dir/xcrawl"
+      codesign --force --sign - "$tmp"
     fi
+    mv -f "$tmp" "$dest"
     echo "Installed $install_dir/xcrawl"
 
 # Run tests
