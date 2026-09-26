@@ -1,5 +1,10 @@
 # justfile for Rust project
 
+# ADR-1168 build stamp: git short sha, suffixed with .dirty when the worktree
+# is dirty. Exported so every cargo build (debug and release) embeds it via
+# option_env!("PM_BUILD_SHA") in the --version output.
+export PM_BUILD_SHA := `printf 'g%s' "$(git rev-parse --short HEAD)"; (git diff --quiet && git diff --cached --quiet) >/dev/null 2>&1 || printf .dirty`
+
 default:
     @just --list
 

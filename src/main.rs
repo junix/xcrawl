@@ -26,7 +26,7 @@ const LONG_HELP: &str = concat!(
 
 #[derive(Debug, Parser)]
 #[command(
-    version,
+    version = version_string(),
     about = "Policy-enforced bounded native web crawler",
     next_line_help = true,
     after_long_help = LONG_HELP
@@ -615,4 +615,29 @@ fn parse_byte_size(raw: &str) -> Result<usize, String> {
 
 fn default_user_agent() -> String {
     format!("xcrawl/{}", xcrawl::VERSION)
+}
+
+/// Version string with the ADR-1168 build stamp: `<semver>+g<sha>` when the
+/// justfile exports `PM_BUILD_SHA` at build time, plain manifest version
+/// otherwise. The stamped variant is leaked once to satisfy clap's
+/// `&'static str` version type.
+fn version_string() -> &'static str {
+    match option_env!("PM_BUILD_SHA") {
+        Some(build_sha) => format!("{}+{}", env!("CARGO_PKG_VERSION"), build_sha).leak(),
+        None => env!("CARGO_PKG_VERSION"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_string;
+
+    #[test]
+    fn version_string_contains_manifest_version() {
+        let version = version_string();
+        assert!(
+            version.starts_with(env!("CARGO_PKG_VERSION")),
+            "unexpected version string: {version}"
+        );
+    }
 }
