@@ -1465,6 +1465,7 @@ dependencies = [
 [[package]]
 name = "readabilities-rs"
 version = "0.1.0"
+source = "git+https://github.com/junix/readabilities-rs.git#5165267f3502853c35899069c310b2b5f25180ec"
 dependencies = [
  "ammonia",
  "clap",

@@ -13,7 +13,7 @@ clap = { version = "4.6.0", features = ["derive"] }
 futures-util = "0.3.31"
 httpdate = "1.0.3"
 ipnet = "2.11.0"
-readabilities-rs = { path = "../readabilities/readabilities-rs", default-features = false, features = ["charset"] }
+readabilities-rs = { git = "https://github.com/junix/readabilities-rs.git", default-features = false, features = ["charset"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["brotli", "deflate", "gzip", "rustls", "stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
