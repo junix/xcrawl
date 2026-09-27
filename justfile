@@ -5,6 +5,9 @@
 # option_env!("PM_BUILD_SHA") in the --version output.
 export PM_BUILD_SHA := `printf 'g%s' "$(git rev-parse --short HEAD)"; (git diff --quiet && git diff --cached --quiet) >/dev/null 2>&1 || printf .dirty`
 
+# Rust crate 本地 target 目录（per-crate；ADR-752 统一方案已废弃）
+target_dir := env("CARGO_TARGET_DIR", justfile_directory() / "target")
+
 default:
     @just --list
 
@@ -36,7 +39,7 @@ install:
     dest="$install_dir/xcrawl"
     tmp="$(mktemp "${dest}.tmp.XXXXXX")"
     trap 'rm -f "$tmp"' EXIT
-    cp target/release/xcrawl "$tmp"
+    cp "{{ target_dir }}/release/xcrawl" "$tmp"
     chmod +x "$tmp"
     if [[ "$os_name" == "macos" ]]; then
       codesign --force --sign - "$tmp"
