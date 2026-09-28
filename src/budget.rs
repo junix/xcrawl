@@ -25,6 +25,7 @@ struct BudgetState {
     requests: usize,
     bytes: usize,
     report_bytes: usize,
+    output_exhausted: bool,
     origins: HashSet<String>,
 }
 
@@ -102,17 +103,30 @@ impl CrawlBudget {
         Ok(())
     }
 
-    pub(crate) fn reserve_report_bytes(&self, bytes: usize) -> Result<()> {
+    pub(crate) fn reserve_report_bytes(&self, bytes: usize, collect: bool) -> Result<()> {
         let mut state = self.state.lock().expect("crawl budget lock poisoned");
         let total = state.report_bytes.saturating_add(bytes);
-        if total > self.config.limits.max_report_bytes {
+        let limit = if collect {
+            self.config.limits.max_report_bytes
+        } else {
+            self.config.limits.max_stream_bytes
+        };
+        if total > limit {
+            state.output_exhausted = true;
             return Err(CrawlError::ResourceBudget {
                 resource: "report_bytes",
-                limit: self.config.limits.max_report_bytes,
+                limit,
             });
         }
         state.report_bytes = total;
         Ok(())
+    }
+
+    pub(crate) fn output_exhausted(&self) -> bool {
+        self.state
+            .lock()
+            .expect("crawl budget lock poisoned")
+            .output_exhausted
     }
 
     pub(crate) fn snapshot(&self) -> BudgetSnapshot {

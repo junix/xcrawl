@@ -25,21 +25,25 @@ address classes are denied.
 Robots handling follows RFC 9309's access outcomes:
 
 - a usable 2xx response applies its parsed rules;
-- 4xx means unavailable and permits crawling;
+- 4xx other than 429 means unavailable and permits crawling;
+- 429 is temporary rate limiting and does not grant access;
 - network errors and 5xx mean unreachable and disallow crawling.
 
 Matching combines repeated product-token groups, normalizes percent-encoded
 octets, supports `*` and `$`, and ignores blank/comment-only lines without
-terminating a group. Remote crawl delays are parsed fallibly and capped at 60
-seconds. The configured origin delay always remains a floor.
+terminating a group. Remote delays are honored without shortening them; delays
+beyond the crawl deadline defer the origin. The configured origin delay remains
+a floor. Waiters recheck cooldowns after waking.
 
 ## Bounded work
 
 Independent limits cover logical pages, HTTP attempts, response bytes, total
 download bytes, unique origins, frontier entries, URL length, crawl duration,
 attempt duration, robots size, reported links, and output bytes. Page analysis
-runs on Tokio's blocking pool and receives the response body by move rather than
-clone. The scheduler refills each free slot as soon as a page completes.
+runs in killable CLI worker processes, with separate output backpressure and
+cancellation. The scheduler refills each free slot as a page completes. See
+[recovery and acquisition](docs/acquisition.md) for library analyzer limits,
+durable frontiers, partial results and the private media candidate contract.
 
 ## CLI
 
@@ -71,7 +75,8 @@ Important policy flags include:
 | Robots | `--ignore-robots`, `--max-robots-delay`, `--max-robots-bytes`, `--max-robots-redirects` |
 | Retry | `--max-retries`, `--retry-base-delay`, `--retry-max-delay`, `--ignore-retry-after` |
 | Network | `--dns-timeout`, `--timeout`, `--allow-private-networks`, `--allow-nonstandard-ports` |
-| Global limits | `--max-http-requests`, `--max-total-download-bytes`, `--max-unique-origins`, `--max-frontier-entries`, `--max-url-length`, `--max-crawl-duration`, `--max-report-bytes` |
+| Global limits | `--max-http-requests`, `--max-total-download-bytes`, `--max-unique-origins`, `--max-frontier-entries`, `--max-url-length`, `--max-crawl-duration`, `--max-report-bytes`, `--max-stream-bytes` |
+| Persistence | `--frontier-dir`, `--private-output` |
 | Outcome | `--allow-partial`, `--fail-on-any-error` |
 
 Exit codes are stable:
@@ -115,7 +120,9 @@ println!("{:?}: {} pages", report.outcome, report.stats.pages_crawled);
 
 `crawl_with_sink` streams `CrawlRecord` values without retaining pages or
 events. `crawl_collect_with_frontier` injects an alternate `Frontier`; its
-`enqueue_if_new` contract makes deduplication reservation and enqueue atomic.
+`complete` contract commits discovered children with parent acknowledgement.
+`DurableFrontier` adds single-owner persistence and crash recovery. Sinks are
+async; shallower rediscovery may re-expand a previously visited resource.
 
 Browser rendering, WAF bypass, distributed persistence, document downloads,
 REST/MCP bindings, and LLM extraction remain outside this runtime.
@@ -126,7 +133,11 @@ REST/MCP bindings, and LLM extraction remain outside this runtime.
 just check-all
 ```
 
-CI checks formatting, Clippy, tests, and builds on the declared Rust 1.85 MSRV.
+CI checks formatting, Clippy and tests on stable, and checks the declared Rust
+1.88 MSRV. The pinned analyzer already depends on scraper 0.26, whose let-chain
+syntax requires Rust 1.88; the former 1.85 declaration was inaccurate.
+Local execution evidence and the remaining coverage boundary are recorded in
+[the validation report](docs/VALIDATION.md).
 
 ## License
 

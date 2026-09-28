@@ -151,7 +151,7 @@ impl Default for NetworkPolicy {
 #[derive(Debug, Clone)]
 pub struct RobotsPolicy {
     pub respect: bool,
-    /// Maximum accepted `Crawl-delay` or derived request-rate interval.
+    /// Legacy parser compatibility parameter; longer server delays are honored.
     pub max_delay: Duration,
     /// Redirects followed while resolving `/robots.txt`.
     pub max_redirects: u8,
@@ -200,6 +200,7 @@ pub struct ResourceLimits {
     pub max_response_bytes: usize,
     pub max_robots_bytes: usize,
     pub max_report_bytes: usize,
+    pub max_stream_bytes: usize,
 }
 
 impl Default for ResourceLimits {
@@ -217,12 +218,15 @@ impl Default for ResourceLimits {
             // RFC 9309 section 2.5 requires support for at least 500 KiB.
             max_robots_bytes: 512 * 1024,
             max_report_bytes: 64 * 1024 * 1024,
+            max_stream_bytes: 64 * 1024 * 1024,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct OutputPolicy {
+    /// Access-controlled raw snapshots and replayable acquisition outbox.
+    pub private_directory: Option<std::path::PathBuf>,
     /// Retain the event stream in a collected report. Streaming sinks receive
     /// events regardless of this setting.
     pub collect_events: bool,
@@ -234,6 +238,7 @@ impl Default for OutputPolicy {
     fn default() -> Self {
         Self {
             collect_events: true,
+            private_directory: None,
             redact_query_values: true,
         }
     }
@@ -267,6 +272,7 @@ impl CrawlConfig {
             || limits.max_url_length == 0
             || limits.max_response_bytes == 0
             || limits.max_report_bytes == 0
+            || limits.max_stream_bytes == 0
         {
             return Err(CrawlError::InvalidConfig(
                 "page, concurrency, link, request, byte, origin, frontier, URL, and report limits must be positive"

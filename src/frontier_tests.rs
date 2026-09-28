@@ -1,6 +1,27 @@
 use super::*;
 
 #[tokio::test]
+async fn shorter_discovery_requeues_even_at_capacity() {
+    let frontier = InMemoryFrontier::new(CrawlStrategy::BreadthFirst, 1);
+    let mut entry = FrontierEntry {
+        url: Url::parse("https://example.test/x").unwrap(),
+        depth: 3,
+    };
+    frontier.enqueue_if_new(vec![entry.clone()]).await.unwrap();
+    frontier.pop().await.unwrap();
+    entry.depth = 2;
+    assert_eq!(
+        frontier
+            .enqueue_if_new(vec![entry.clone()])
+            .await
+            .unwrap()
+            .enqueued,
+        vec![entry.clone()]
+    );
+    assert_eq!(frontier.pop().await.unwrap(), Some(entry));
+}
+
+#[tokio::test]
 async fn enqueue_and_seen_reservation_are_atomic() {
     let frontier = InMemoryFrontier::new(CrawlStrategy::BreadthFirst, 2);
     let entry = FrontierEntry {

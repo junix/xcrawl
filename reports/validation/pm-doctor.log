@@ -1,0 +1,22 @@
+Checking environment:
+  [OK] go (go version go1.26.4 darwin/arm64)
+  [OK] git
+  [OK] just
+  [OK] gh CLI
+  [OK] gh auth
+  [OK] registry (1303 projects, repos/ layout; 1221 described, 1219 tagged)
+  [OK] pm config (~/.config/pm/config.json)
+  [OK] ignore rules (1 pattern(s) from ~/.config/pm/config.json; 3 of 1304 project(s) excluded)
+  [OK] managed_files/
+  [OK] managed file links (3 delivered from managed_files)
+  [OK] ~/sync/bin/
+  [OK] PROJECTS_DIR (/Users/junix/projects (default))
+
+Scanning for project issues...
+  [INFO] Deep checks enabled
+  [INFO] Selected 1 registered project(s)
+  [WARN] Found 1 project issues:
+    - Uncommitted changes: /Users/junix/projects/crawler/xcrawl
+      Suggestion: Commit or stash changes in /Users/junix/projects/crawler/xcrawl
+
+12 passed, 1 failed

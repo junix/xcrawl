@@ -7,9 +7,77 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use url::Url;
 use xcrawl::{
-    CrawlConfig, CrawlError, CrawlOutcome, Crawler, PageAnalysis, PageAnalyzer, PageInput,
-    PortPolicy, ReadabilitiesAnalyzer, RedirectPolicy, RobotsDecision, ScopeBoundary,
+    CrawlConfig, CrawlOutcome, Crawler, PageAnalysis, PageAnalyzer, PageInput, PortPolicy,
+    ReadabilitiesAnalyzer, RedirectPolicy, RobotsDecision, ScopeBoundary,
 };
+
+#[tokio::test]
+async fn late_shorter_path_expands_eligible_descendants() {
+    let (seed, server) = serve(Arc::new(|path| {
+        let mut reply = match path {
+            "/" => Reply::ok("<a href='/a'>a</a><a href='/b'>b</a>"),
+            "/a" => Reply::ok("<a href='/c'>c</a>"),
+            "/b" | "/c" => Reply::ok("<a href='/x'>x</a>"),
+            "/x" => Reply::ok("<a href='/child'>child</a>"),
+            _ => Reply::ok("<article>eligible child</article>"),
+        };
+        if path == "/b" {
+            reply.delay = Duration::from_millis(150);
+        }
+        reply
+    }))
+    .await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.traversal.max_depth = 3;
+    config.traversal.max_origin_in_flight = 4;
+    config.traversal.concurrency = 4;
+    config.traversal.default_delay = Duration::ZERO;
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    server.abort();
+    assert!(
+        report
+            .pages
+            .iter()
+            .any(|page| page.final_url.path() == "/x" && page.depth == 3)
+    );
+    assert!(
+        report
+            .pages
+            .iter()
+            .any(|page| page.final_url.path() == "/child" && page.depth == 3)
+    );
+}
+
+struct StalledSink;
+#[async_trait::async_trait]
+impl xcrawl::CrawlSink for StalledSink {
+    async fn emit(&self, _: &xcrawl::CrawlRecord) -> Result<(), xcrawl::CrawlSinkError> {
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn blocked_output_cannot_defeat_the_crawl_deadline() {
+    let (seed, server) = serve(Arc::new(|_| Reply::ok("<article>output fixture</article>"))).await;
+    let mut config = local_config();
+    config.robots.respect = false;
+    config.limits.max_crawl_duration = Duration::from_millis(100);
+    config.limits.max_attempt_duration = Duration::from_millis(50);
+    config.network.dns_timeout = Duration::from_millis(10);
+    config.retry.max_delay = Duration::from_millis(10);
+    config.retry.base_delay = Duration::from_millis(1);
+    config.traversal.default_delay = Duration::ZERO;
+    let start = Instant::now();
+    let report = Crawler::new(config)
+        .unwrap()
+        .crawl_with_sink(&seed, Arc::new(StalledSink))
+        .await
+        .unwrap();
+    server.abort();
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert_ne!(report.outcome, CrawlOutcome::Complete);
+}
 
 #[derive(Clone)]
 struct Reply {
@@ -413,7 +481,8 @@ async fn request_budget_counts_redirect_hops() {
     config.limits.max_http_requests = 1;
     let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
     server.abort();
-    assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
+    assert_eq!(report.outcome, CrawlOutcome::Partial);
+    assert_eq!(report.termination_reason.as_deref(), Some("request_limit"));
     assert_eq!(report.stats.http_requests, 1);
     assert_eq!(
         report.failures[0].error.kind,
@@ -435,7 +504,8 @@ async fn total_download_budget_is_enforced_while_streaming() {
     config.limits.max_response_bytes = 1_024;
     let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
     server.abort();
-    assert_eq!(report.outcome, CrawlOutcome::SeedFailed);
+    assert_eq!(report.outcome, CrawlOutcome::Partial);
+    assert_eq!(report.termination_reason.as_deref(), Some("byte_limit"));
     assert_eq!(
         report.failures[0].error.kind,
         xcrawl::FailureKind::ResourceBudget
@@ -450,29 +520,15 @@ async fn total_download_budget_is_enforced_while_streaming() {
 }
 
 #[tokio::test]
-async fn the_report_budget_stops_the_crawl_before_any_request() {
+async fn the_report_budget_preserves_a_terminal_report() {
     // Port 1 on localhost needs no server: the collected-report reservation
     // happens before the crawl loop sends anything.
     let seed = Url::parse("http://127.0.0.1:1/").unwrap();
     let mut config = local_config();
     config.limits.max_report_bytes = 512;
-    let error = Crawler::new(config)
-        .unwrap()
-        .crawl(&seed)
-        .await
-        .unwrap_err();
-    // The fixed collected-report overhead alone (1 KiB) exceeds the 512-byte
-    // cap, so the crawl aborts with the exact resource and limit named.
-    assert!(
-        matches!(
-            error,
-            CrawlError::ResourceBudget {
-                resource: "report_bytes",
-                limit: 512,
-            }
-        ),
-        "got: {error}"
-    );
+    let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
+    assert_eq!(report.outcome, CrawlOutcome::Partial);
+    assert_eq!(report.termination_reason.as_deref(), Some("output_limit"));
 }
 
 #[tokio::test]
@@ -525,10 +581,10 @@ async fn undecodable_page_body_is_not_downloaded() {
     assert_eq!(page.status, 200);
     assert_eq!(page.content_type.as_deref(), Some("application/pdf"));
     assert_eq!(page.body_bytes, 0);
-    assert_eq!(
-        page.article_error.as_ref().expect("unsupported body").kind,
-        "unsupported"
-    );
+    assert_eq!(page.analysis_status, "skipped_unsupported_content_type");
+    assert!(page.article_error.is_none());
+    assert_eq!(report.stats.pages_skipped, 1);
+    assert_eq!(report.stats.pages_analyzed, 0);
     // Zero download-side proof: 64 KiB of PDF bytes stayed on the wire.
     assert_eq!(report.stats.downloaded_bytes, 0);
 }
@@ -553,10 +609,9 @@ async fn missing_content_type_page_body_is_not_downloaded() {
     assert_eq!(page.status, 200);
     assert!(page.content_type.is_none());
     assert_eq!(page.body_bytes, 0);
-    assert_eq!(
-        page.article_error.as_ref().expect("unsupported body").kind,
-        "unsupported"
-    );
+    assert_eq!(page.analysis_status, "skipped_unsupported_content_type");
+    assert!(page.article_error.is_none());
+    assert_eq!(report.stats.pages_skipped, 1);
     assert_eq!(report.stats.downloaded_bytes, 0);
 }
 
@@ -589,9 +644,7 @@ struct PanickyChildAnalyzer {
 
 impl PageAnalyzer for PanickyChildAnalyzer {
     fn analyze(&self, page: PageInput) -> PageAnalysis {
-        if page.final_url.path() == "/child" {
-            panic!("analyzer exploded");
-        }
+        assert!(page.final_url.path() != "/child", "analyzer exploded");
         self.inner.analyze(page)
     }
 }
@@ -633,7 +686,7 @@ async fn a_panicking_analyzer_fails_only_that_page() {
         "got: {}",
         failure.error.message
     );
-    assert_eq!(failure.error.retryable, false);
+    assert!(!failure.error.retryable);
 }
 
 #[tokio::test]
@@ -865,11 +918,11 @@ async fn query_values_are_redacted_in_reports_but_fetched_verbatim() {
         Some("session=REDACTED&ok=REDACTED")
     );
     // Redaction is display-only: the wire saw the exact query strings.
-    let seen = seen_targets.lock().unwrap();
-    assert!(seen.contains(&"/?token=abc".to_string()), "{seen:?}");
+    let targets = seen_targets.lock().unwrap();
+    assert!(targets.contains(&"/?token=abc".to_string()), "{targets:?}");
     assert!(
-        seen.contains(&"/leak?session=42&ok=1".to_string()),
-        "{seen:?}"
+        targets.contains(&"/leak?session=42&ok=1".to_string()),
+        "{targets:?}"
     );
 }
 
@@ -941,8 +994,8 @@ async fn the_page_budget_truncates_scheduling_without_failing() {
     let report = Crawler::new(config).unwrap().crawl(&seed).await.unwrap();
     server.abort();
 
-    // Hitting the page cap is a clean truncation, not a crawl failure.
-    assert_eq!(report.outcome, CrawlOutcome::Complete);
+    assert_eq!(report.outcome, CrawlOutcome::Partial);
+    assert_eq!(report.termination_reason.as_deref(), Some("page_limit"));
     assert_eq!(report.stats.pages_crawled, 2);
     assert_eq!(report.pages.len(), 2);
     assert_eq!(two_hits.load(Ordering::SeqCst), 0);
@@ -1164,7 +1217,7 @@ async fn an_attempt_outliving_the_attempt_deadline_is_a_timeout_failure() {
     assert_eq!(failure.kind, xcrawl::FailureKind::Timeout);
     assert_eq!(failure.message, "request attempt timed out");
     assert_eq!(failure.attempts, 1);
-    assert_eq!(failure.retryable, true);
+    assert!(failure.retryable);
     assert_eq!(report.stats.http_requests, 1);
     // The deadline fired while waiting for headers, so no body bytes were
     // charged against the download budget.
@@ -1198,7 +1251,7 @@ async fn exhausted_http_retries_report_every_attempt() {
     assert_eq!(failure.status, Some(503));
     assert_eq!(failure.message, format!("HTTP 503 returned for {seed}"));
     assert_eq!(failure.attempts, 3);
-    assert_eq!(failure.retryable, true);
+    assert!(failure.retryable);
 }
 
 #[tokio::test]

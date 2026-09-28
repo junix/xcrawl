@@ -1,0 +1,136 @@
+cargo test
+   Compiling xcrawl v0.2.0 (/Users/junix/projects/crawler/xcrawl)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.04s
+     Running unittests src/lib.rs (target/debug/deps/xcrawl-73e8b6dbb17ee8bc)
+
+running 43 tests
+test crawler::tests::segment_path_prefix_has_a_boundary ... ok
+test crawler::tests::path_prefix_modes_split_on_segment_boundaries_only ... ok
+test fetch::tests::binary_and_missing_content_types_fail_the_preflight ... ok
+test fetch::tests::decodable_document_families_pass_the_content_type_preflight ... ok
+test crawler::tests::normalization_is_idempotent_and_fragment_insensitive ... ok
+test fetch::tests::diagnostics_redact_query_values_and_credentials ... ok
+test fetch::tests::default_exceptions_allow_carved_out_addresses ... ok
+test fetch::tests::explicit_allow_and_deny_lists_beat_the_default_policy ... ok
+test fetch::tests::only_actual_redirect_statuses_are_followed ... ok
+test fetch::tests::error_chains_redact_credential_markers_and_truncate ... ok
+test fetch::tests::retry_after_accepts_seconds_and_http_dates_only ... ok
+test fetch::tests::origin_key_fills_in_default_ports ... ok
+test fetch::tests::validate_url_rejects_non_web_schemes_credentials_and_ports ... ok
+test frontier::tests::normalization_variations_dedupe_to_one_entry ... ok
+test frontier::tests::pop_order_follows_the_configured_strategy ... ok
+test frontier::tests::shorter_discovery_requeues_even_at_capacity ... ok
+test frontier::tests::enqueue_and_seen_reservation_are_atomic ... ok
+test frontier::tests::capacity_bounds_seen_and_queue_state ... ok
+test fetch::tests::iana_non_global_ranges_and_embedded_ipv4_are_denied ... ok
+test robots::tests::blank_lines_comments_and_repeated_groups_are_combined ... ok
+test robots::tests::dollar_anchor_matches_only_the_exact_path ... ok
+test robots::tests::crawl_delay_wins_over_request_rate_and_bad_values_are_ignored ... ok
+test resource::tests::binary_headers_route_without_parsing_the_body ... ok
+test robots::tests::empty_directive_values_are_ignored ... ok
+test fetch::tests::shared_network_policy_corpus ... ok
+test robots::tests::long_crawl_delays_are_never_discarded ... ok
+test robots::tests::longer_rule_wins_over_shorter_regardless_of_polarity ... ok
+test robots::tests::most_specific_agent_group_wins_over_the_star_group ... ok
+test robots::tests::percent_encoding_wildcards_and_equal_allow_are_conformant ... ok
+test resource::tests::discovers_typed_media_and_preserves_signed_execution_urls ... ok
+test robots::tests::request_rate_uses_numerator_and_extreme_delays_defer_the_origin ... ok
+test robots::tests::reserved_escapes_are_uppercased_but_not_decoded ... ok
+test robots::tests::sitemap_directives_are_collected_across_groups ... ok
+test throttle::tests::retry_after_blocks_the_next_attempt ... ok
+test throttle::tests::configured_delay_is_always_a_floor ... ok
+test throttle::tests::retry_after_is_not_shortened_by_local_backoff_limit ... ok
+test throttle::tests::consecutive_429s_double_the_backoff ... ok
+test throttle::tests::backoff_growth_is_capped_at_sixty_seconds ... ok
+test throttle::tests::five_successes_halve_the_adaptive_backoff ... ok
+test throttle::tests::zero_floor_still_backs_off_after_429 ... ok
+test throttle::tests::sleeping_waiter_observes_extended_cooldown ... ok
+test robots::tests::arbitrary_input_never_panics ... ok
+test durable_frontier::tests::a_crashed_claim_is_recovered_and_children_commit_with_completion ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running unittests src/main.rs (target/debug/deps/xcrawl-d32e58708650afb1)
+
+running 1 test
+test tests::version_string_contains_manifest_version ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/debug/deps/cli-fae7ecc9d27249e2)
+
+running 17 tests
+test help_exposes_security_outcome_and_resource_policies_without_build_path ... ok
+test conflicting_scope_flags_fail_as_invalid_policy ... ok
+test dry_run_reports_the_grouped_effective_policy_without_network ... ok
+test denied_seed_targets_and_retry_overflow_keep_their_exit_codes_apart ... ok
+test invalid_policy_and_credentialed_seed_fail_without_leaking_secrets ... ok
+test a_complete_crawl_exits_zero_and_pretty_prints_without_compact ... ok
+test byte_size_units_decode_decimal_binary_and_unitless_values ... ok
+test policy_flag_aliases_map_to_exact_plan_values ... ok
+test jsonl_is_the_default_and_broken_pipe_is_successful_cancellation ... ok
+test seed_scope_and_url_length_rejections_have_distinct_exit_codes ... ok
+test the_default_dry_run_plan_pins_the_conservative_defaults ... ok
+test malformed_flag_values_exit_2_as_usage_errors ... ok
+test unreachable_seed_is_nonzero_and_structured ... ok
+test partial_requires_an_explicit_allow_partial_override ... ok
+test the_default_jsonl_stream_emits_records_in_protocol_order ... ok
+test a_deadline_crawl_exits_one_and_names_the_deadline ... ok
+test a_real_full_stdout_pipe_cannot_hold_the_cli_open ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.02s
+
+     Running tests/config.rs (target/debug/deps/config-01001b01fe162c57)
+
+running 3 tests
+test enforcement_gated_rules_relax_when_robots_is_disabled ... ok
+test the_default_config_is_valid ... ok
+test every_validation_branch_reports_its_exact_diagnostic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/policy.rs (target/debug/deps/policy-c26657075a1f854f)
+
+running 34 tests
+test an_oversized_content_length_is_rejected_before_streaming ... ok
+test cross_origin_redirect_denial_names_target_and_action ... ok
+test decodable_text_page_body_still_downloads ... ok
+test a_panicking_analyzer_fails_only_that_page ... ok
+test every_redirect_target_gets_its_own_robots_decision ... ok
+test missing_content_type_page_body_is_not_downloaded ... ok
+test exhausted_http_retries_report_every_attempt ... ok
+test domain_scope_admits_the_same_host_on_other_ports_only ... ok
+test origin_scope_admits_only_the_exact_seed_origin ... ok
+test pages_collapsing_to_one_resource_are_crawled_once ... ok
+test nofollow_links_are_filtered_unless_following_is_enabled ... ok
+test redirect_budget_message_names_the_hop_limit ... ok
+test redirect_into_an_excluded_path_is_rejected_before_request ... ok
+test query_values_are_redacted_in_reports_but_fetched_verbatim ... ok
+test request_budget_counts_redirect_hops ... ok
+test reported_links_are_bounded_and_total_is_preserved ... ok
+test retry_after_is_ignored_when_the_operator_opts_out ... ok
+test robots_404_is_unavailable_and_allows_the_page ... ok
+test robots_5xx_and_network_failure_fail_closed ... ok
+test blocked_output_cannot_defeat_the_crawl_deadline ... ok
+test robots_redirect_loops_fail_closed_after_the_hop_budget ... ok
+test the_page_budget_truncates_scheduling_without_failing ... ok
+test retries_reacquire_the_origin_delay ... ok
+test the_unique_origin_budget_denies_the_second_origin_by_name ... ok
+test total_download_budget_is_enforced_while_streaming ... ok
+test undecodable_page_body_is_not_downloaded ... ok
+test the_report_budget_preserves_a_terminal_report ... ok
+test zero_depth_crawls_only_the_seed_but_still_reports_its_links ... ok
+test an_attempt_outliving_the_attempt_deadline_is_a_timeout_failure ... ok
+test late_shorter_path_expands_eligible_descendants ... ok
+test a_crawl_that_outlives_its_deadline_reports_the_reason ... ok
+test continuous_scheduler_refills_a_slot_before_a_slow_peer_finishes ... ok
+test robots_crawl_delay_paces_page_requests ... ok
+test retry_after_header_gates_the_second_attempt ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s
+
+   Doc-tests xcrawl
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

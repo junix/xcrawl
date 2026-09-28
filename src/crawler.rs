@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +28,7 @@ pub struct Crawler {
     config: Arc<CrawlConfig>,
     analyzer: Arc<dyn PageAnalyzer>,
     transport: OneHopTransport,
+    analysis_worker: Option<std::path::PathBuf>,
 }
 
 impl fmt::Debug for Crawler {
@@ -52,7 +53,15 @@ impl Crawler {
             config,
             analyzer,
             transport,
+            analysis_worker: None,
         })
+    }
+
+    /// Use a trusted xcrawl executable for cancellable, isolated parsing.
+    #[must_use]
+    pub fn with_analysis_worker(mut self, executable: std::path::PathBuf) -> Self {
+        self.analysis_worker = Some(executable);
+        self
     }
 
     /// Crawl into a bounded in-memory report.
@@ -90,6 +99,15 @@ impl Crawler {
         Ok(output.summary)
     }
 
+    pub async fn crawl_with_frontier_and_sink(
+        &self,
+        seed: &Url,
+        frontier: Arc<dyn Frontier>,
+        sink: Arc<dyn CrawlSink>,
+    ) -> Result<CrawlSummary> {
+        Ok(self.run(seed, frontier, sink, false).await?.summary)
+    }
+
     pub fn validate_seed(&self, seed: &Url) -> Result<()> {
         validate_url(seed, &self.config.network)?;
         let scope = ScopeContext::new(seed)?;
@@ -116,15 +134,29 @@ impl Crawler {
     ) -> Result<RunOutput> {
         self.config.validate()?;
         self.validate_seed(seed)?;
+        let _output_lease = self
+            .config
+            .output
+            .private_directory
+            .as_deref()
+            .map(crate::resource::lock_output)
+            .transpose()?;
+        frontier
+            .bind_identity(&format!(
+                "xcrawl:v1:{}:{:?}:{:?}:{}",
+                normalize_url(seed),
+                self.config.scope,
+                self.config.network,
+                self.config.traversal.max_depth
+            ))
+            .await?;
         let started = Instant::now();
         let scope = Arc::new(ScopeContext::new(seed)?);
         let budget = Arc::new(CrawlBudget::new(Arc::clone(&self.config))?);
-        if collect {
-            budget.reserve_report_bytes(1_024)?;
-        }
         let runtime = Arc::new(CrawlRuntime {
             config: Arc::clone(&self.config),
             analyzer: Arc::clone(&self.analyzer),
+            analysis_worker: self.analysis_worker.clone(),
             transport: self.transport.clone(),
             throttle: Arc::new(OriginScheduler::new(
                 self.config.traversal.default_delay,
@@ -132,7 +164,7 @@ impl Crawler {
             )),
             budget: Arc::clone(&budget),
             robots: Arc::new(AsyncMutex::new(HashMap::new())),
-            resources_seen: Arc::new(Mutex::new(HashSet::new())),
+            resources_seen: Arc::new(Mutex::new(HashMap::new())),
             scope,
         });
 
@@ -142,7 +174,7 @@ impl Crawler {
                 depth: 0,
             }])
             .await?;
-        if seed_result.enqueued.is_empty() {
+        if seed_result.rejected_capacity > 0 {
             return Err(CrawlError::ResourceBudget {
                 resource: "frontier_entries",
                 limit: self.config.limits.max_frontier_entries,
@@ -157,6 +189,11 @@ impl Crawler {
         let mut sink_closed = false;
 
         loop {
+            if budget.output_exhausted() {
+                terminal_outcome = Some(CrawlOutcome::Partial);
+                termination_reason = Some("output_limit".to_string());
+                break;
+            }
             while !sink_closed
                 && terminal_outcome.is_none()
                 && pending.len() < self.config.traversal.concurrency
@@ -167,7 +204,15 @@ impl Crawler {
                     termination_reason = Some(error.to_string());
                     break;
                 }
-                let Some(entry) = frontier.pop().await? else {
+                let claimed =
+                    tokio::time::timeout(budget.remaining_duration()?, frontier.pop()).await;
+                let Some(entry) = (if let Ok(result) = claimed {
+                    result?
+                } else {
+                    terminal_outcome = Some(CrawlOutcome::DeadlineExceeded);
+                    termination_reason = Some("crawl deadline exceeded".to_string());
+                    break;
+                }) else {
                     break;
                 };
                 scheduled += 1;
@@ -215,7 +260,9 @@ impl Crawler {
                     },
                     collect,
                     self.config.output.collect_events,
-                )? {
+                )
+                .await?
+                {
                     EmitState::Continue => {}
                     EmitState::BrokenPipe => {
                         sink_closed = true;
@@ -249,7 +296,9 @@ impl Crawler {
                             CrawlRecord::Event { value: event },
                             collect,
                             self.config.output.collect_events,
-                        )? == EmitState::BrokenPipe
+                        )
+                        .await?
+                            == EmitState::BrokenPipe
                         {
                             sink_closed = true;
                             terminal_outcome = Some(CrawlOutcome::Cancelled);
@@ -259,7 +308,13 @@ impl Crawler {
                         }
                     }
                     let page = processed.page;
-                    report.stats.pages_crawled = report.stats.pages_crawled.saturating_add(1);
+                    report.stats.pages_fetched += 1;
+                    if page.analysis_status == "analyzed" {
+                        report.stats.pages_crawled += 1;
+                        report.stats.pages_analyzed += 1;
+                    } else {
+                        report.stats.pages_skipped += 1;
+                    }
                     let event = CrawlEvent::Page {
                         url: page.final_url.clone(),
                         depth: page.depth,
@@ -272,7 +327,9 @@ impl Crawler {
                         CrawlRecord::Event { value: event },
                         collect,
                         self.config.output.collect_events,
-                    )? == EmitState::BrokenPipe
+                    )
+                    .await?
+                        == EmitState::BrokenPipe
                         || emit_record(
                             &sink,
                             &budget,
@@ -282,7 +339,9 @@ impl Crawler {
                             },
                             collect,
                             self.config.output.collect_events,
-                        )? == EmitState::BrokenPipe
+                        )
+                        .await?
+                            == EmitState::BrokenPipe
                     {
                         sink_closed = true;
                         terminal_outcome = Some(CrawlOutcome::Cancelled);
@@ -290,6 +349,24 @@ impl Crawler {
                     }
                 }
                 PageTask::Failure(failure) => {
+                    let exhausted = match failure.error {
+                        CrawlError::ResourceBudget {
+                            resource: "download_bytes",
+                            ..
+                        } => Some("byte_limit"),
+                        CrawlError::ResourceBudget {
+                            resource: "http_requests",
+                            ..
+                        } => Some("request_limit"),
+                        _ => None,
+                    };
+                    if let Some(reason) = exhausted {
+                        terminal_outcome = Some(CrawlOutcome::Partial);
+                        termination_reason = Some(reason.to_string());
+                        report.stats.unfinished += 1;
+                    } else {
+                        frontier.complete(&failure.entry, Vec::new()).await?;
+                    }
                     let failure = failure.into_model(self.config.output.redact_query_values);
                     report.stats.pages_failed = report.stats.pages_failed.saturating_add(1);
                     let event = CrawlEvent::Failed {
@@ -297,7 +374,7 @@ impl Crawler {
                         depth: failure.depth,
                         error: failure.error.clone(),
                     };
-                    if failure.depth == 0 {
+                    if failure.depth == 0 && exhausted.is_none() {
                         terminal_outcome = Some(CrawlOutcome::SeedFailed);
                         termination_reason = Some(failure.error.message.clone());
                     }
@@ -308,7 +385,9 @@ impl Crawler {
                         CrawlRecord::Event { value: event },
                         collect,
                         self.config.output.collect_events,
-                    )? == EmitState::BrokenPipe
+                    )
+                    .await?
+                        == EmitState::BrokenPipe
                         || emit_record(
                             &sink,
                             &budget,
@@ -316,20 +395,42 @@ impl Crawler {
                             CrawlRecord::Failure { value: failure },
                             collect,
                             self.config.output.collect_events,
-                        )? == EmitState::BrokenPipe
+                        )
+                        .await?
+                            == EmitState::BrokenPipe
                     {
                         sink_closed = true;
                         terminal_outcome = Some(CrawlOutcome::Cancelled);
                         termination_reason = Some("output consumer closed the stream".to_string());
                     }
                 }
-                PageTask::Duplicate { .. } => {
+                PageTask::Duplicate { entry, .. } => {
+                    frontier.complete(&entry, Vec::new()).await?;
                     report.stats.urls_filtered += 1;
                 }
             }
         }
 
+        if sink_closed && budget.remaining_duration().is_err() {
+            terminal_outcome = Some(CrawlOutcome::DeadlineExceeded);
+            termination_reason = Some("output_deadline".to_string());
+        }
+        if termination_reason.is_none() {
+            if scheduled >= self.config.limits.max_pages && !frontier.is_empty().await? {
+                termination_reason = Some("page_limit".to_string());
+                terminal_outcome = Some(CrawlOutcome::Partial);
+            } else if report.stats.frontier_rejected > 0 {
+                termination_reason = Some("frontier_limit".to_string());
+                terminal_outcome = Some(CrawlOutcome::Partial);
+            } else {
+                termination_reason = Some("frontier_exhausted".to_string());
+            }
+        }
+        report.stats.unfinished += pending
+            .len()
+            .saturating_add(frontier.pending_count().await?);
         drop(pending);
+        frontier.release_claims().await?;
         let budget_snapshot = budget.snapshot();
         report.stats.http_requests = budget_snapshot.requests;
         report.stats.downloaded_bytes = budget_snapshot.bytes;
@@ -346,6 +447,7 @@ impl Crawler {
             }
         });
         report.outcome = outcome;
+        termination_reason = termination_reason.map(|reason| reason.chars().take(500).collect());
         report.termination_reason = termination_reason.clone();
         let summary = CrawlSummary {
             outcome,
@@ -364,7 +466,8 @@ impl Crawler {
                 CrawlRecord::Event { value: complete },
                 collect,
                 self.config.output.collect_events,
-            )?;
+            )
+            .await?;
             let _ = emit_record(
                 &sink,
                 &budget,
@@ -374,7 +477,8 @@ impl Crawler {
                 },
                 false,
                 false,
-            )?;
+            )
+            .await?;
         }
         Ok(RunOutput { report, summary })
     }
@@ -392,10 +496,10 @@ impl Crawler {
             .links
             .truncate(self.config.traversal.max_links_to_analyze);
 
+        let mut candidates = Vec::new();
         if success.entry.depth < self.config.traversal.max_depth
             && !success.analysis.robots.nofollow
         {
-            let mut candidates = Vec::new();
             for link in &success.analysis.links {
                 if candidates.len() >= self.config.traversal.max_links_to_enqueue {
                     break;
@@ -415,23 +519,77 @@ impl Crawler {
                     depth: success.entry.depth + 1,
                 });
             }
-            let result = frontier.enqueue_if_new(candidates).await?;
-            stats.urls_filtered = stats
-                .urls_filtered
-                .saturating_add(result.duplicates)
-                .saturating_add(result.rejected_capacity);
-            success.enqueued = result.enqueued;
         }
+        // Persist execution candidates before acknowledging the page. A crash
+        // can replay discovery/submission, but cannot lose the acquisition.
+        if let Some(directory) = &self.config.output.private_directory {
+            for candidate in &success.analysis.resources {
+                let path = directory
+                    .join("outbox")
+                    .join(format!("{}.json", candidate.resource_id));
+                crate::resource::persist_candidate(&path, candidate)?;
+            }
+        }
+        let result = frontier.complete(&success.entry, candidates).await?;
+        stats.frontier_rejected = stats
+            .frontier_rejected
+            .saturating_add(result.rejected_capacity);
+        stats.urls_filtered = stats
+            .urls_filtered
+            .saturating_add(result.duplicates)
+            .saturating_add(result.rejected_capacity);
+        success.enqueued = result.enqueued;
 
         let mut links = success.analysis.links;
         let links_truncated = links_discovered > self.config.traversal.max_links_to_report;
         links.truncate(self.config.traversal.max_links_to_report);
         if self.config.output.redact_query_values {
+            for candidate in &mut success.analysis.resources {
+                candidate.visibility = "public_redacted".to_string();
+                candidate.url = sanitized_url(&candidate.url);
+                candidate.source_page = sanitized_url(&candidate.source_page);
+            }
             for link in &mut links {
                 link.url = sanitized_url(&link.url);
             }
+            if let Some(article) = &mut success.analysis.article {
+                for value in [
+                    &mut article.metadata.image,
+                    &mut article.metadata.canonical_url,
+                    &mut article.provenance.source_url,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    *value = Url::parse(value)
+                        .map_or_else(|_| "REDACTED".to_string(), |url| safe_url(&url));
+                }
+                for warning in &mut article.warnings {
+                    warning.message = "analysis warning; see code".to_string();
+                }
+            }
+            if let Some(error) = &mut success.analysis.article_error {
+                error.message = "page analysis failed; see kind and stage".to_string();
+            }
         }
         let page = CrawlPage {
+            snapshot: self
+                .config
+                .output
+                .private_directory
+                .as_ref()
+                .filter(|_| {
+                    crate::fetch::is_decodable_content_type(
+                        success.response.headers.content_type.as_deref(),
+                    )
+                })
+                .map(|_| {
+                    format!(
+                        "snapshots/{}.body",
+                        crate::resource::identity(&success.response.url, "snapshot")
+                    )
+                }),
+            resources: success.analysis.resources,
             requested_url: report_url(&success.entry.url, self.config.output.redact_query_values),
             final_url: report_url(
                 &success.response.url,
@@ -444,6 +602,14 @@ impl Crawler {
                 .collect(),
             depth: success.entry.depth,
             status: success.response.status,
+            analysis_status: if crate::fetch::is_decodable_content_type(
+                success.response.headers.content_type.as_deref(),
+            ) {
+                "analyzed"
+            } else {
+                "skipped_unsupported_content_type"
+            }
+            .to_string(),
             content_type: success.response.headers.content_type,
             body_bytes: success.body_bytes,
             detected_encoding: success.analysis.detected_encoding,
@@ -470,11 +636,12 @@ impl Crawler {
 struct CrawlRuntime {
     config: Arc<CrawlConfig>,
     analyzer: Arc<dyn PageAnalyzer>,
+    analysis_worker: Option<std::path::PathBuf>,
     transport: OneHopTransport,
     throttle: Arc<OriginScheduler>,
     budget: Arc<CrawlBudget>,
     robots: Arc<AsyncMutex<HashMap<String, Arc<OnceCell<CachedRobots>>>>>,
-    resources_seen: Arc<Mutex<HashSet<String>>>,
+    resources_seen: Arc<Mutex<HashMap<String, usize>>>,
     scope: Arc<ScopeContext>,
 }
 
@@ -485,22 +652,37 @@ impl CrawlRuntime {
             .resources_seen
             .lock()
             .expect("resource seen lock poisoned")
-            .contains(&request_key)
+            .get(&request_key)
+            .is_some_and(|depth| *depth <= entry.depth)
         {
-            return PageTask::Duplicate { events: Vec::new() };
+            return PageTask::Duplicate {
+                entry,
+                events: Vec::new(),
+            };
         }
         let fetched = match self.fetch_page(&entry).await {
             Ok(fetched) => fetched,
             Err(failure) => return PageTask::Failure(failure),
         };
         let resource_key = normalize_url(&fetched.response.url);
-        if !self
-            .resources_seen
-            .lock()
-            .expect("resource seen lock poisoned")
-            .insert(resource_key)
-        {
+        let duplicate = {
+            let mut seen = self
+                .resources_seen
+                .lock()
+                .expect("resource seen lock poisoned");
+            if seen
+                .get(&resource_key)
+                .is_some_and(|depth| *depth <= entry.depth)
+            {
+                true
+            } else {
+                seen.insert(resource_key, entry.depth);
+                false
+            }
+        };
+        if duplicate {
             return PageTask::Duplicate {
+                entry,
                 events: fetched.events,
             };
         }
@@ -512,6 +694,27 @@ impl CrawlRuntime {
             body,
         } = fetched.response;
         let body_bytes = body.len();
+        if let Some(directory) =
+            self.config.output.private_directory.as_ref().filter(|_| {
+                crate::fetch::is_decodable_content_type(headers.content_type.as_deref())
+            })
+        {
+            let snapshot_id = crate::resource::identity(&url, "snapshot");
+            if let Err(error) = crate::resource::atomic_private(
+                &directory
+                    .join("snapshots")
+                    .join(format!("{snapshot_id}.body")),
+                &body,
+            ) {
+                return PageTask::Failure(TaskFailure {
+                    entry,
+                    error,
+                    attempts: fetched.attempts,
+                    redirect_chain: fetched.redirect_chain,
+                    events: fetched.events,
+                });
+            }
+        }
         let input = PageInput {
             final_url: url.clone(),
             content_type: headers.content_type.clone(),
@@ -520,7 +723,20 @@ impl CrawlRuntime {
             max_links: self.config.traversal.max_links_to_analyze,
         };
         let analyzer = Arc::clone(&self.analyzer);
-        let analysis = match tokio::task::spawn_blocking(move || analyzer.analyze(input)).await {
+        let result = if crate::fetch::is_decodable_content_type(input.content_type.as_deref()) {
+            crate::analyzer::analyze_bounded(analyzer, input, self.analysis_worker.as_deref()).await
+        } else {
+            Ok(PageAnalysis {
+                resources: crate::resource::from_response(
+                    &entry.url,
+                    &url,
+                    headers.content_type.as_deref(),
+                ),
+                detected_encoding: "binary".to_string(),
+                ..PageAnalysis::default()
+            })
+        };
+        let analysis = match result {
             Ok(analysis) => analysis,
             Err(error) => {
                 return PageTask::Failure(TaskFailure {
@@ -549,6 +765,7 @@ impl CrawlRuntime {
         }))
     }
 
+    #[allow(clippy::result_large_err)] // Error retains bounded request provenance for the report.
     async fn fetch_page(&self, entry: &FrontierEntry) -> std::result::Result<Fetched, TaskFailure> {
         let mut current = entry.url.clone();
         let initial_origin = origin_key(&current);
@@ -780,7 +997,9 @@ impl CrawlRuntime {
                         status: response.status,
                     };
                 }
-                HopOutcome::Response(response) if (400..500).contains(&response.status) => {
+                HopOutcome::Response(response)
+                    if (400..500).contains(&response.status) && response.status != 429 =>
+                {
                     break RobotsState::UnavailableAllow {
                         status: response.status,
                     };
@@ -1050,7 +1269,10 @@ struct AttemptFailure {
 enum PageTask {
     Success(Box<PageSuccess>),
     Failure(TaskFailure),
-    Duplicate { events: Vec<CrawlEvent> },
+    Duplicate {
+        entry: FrontierEntry,
+        events: Vec<CrawlEvent>,
+    },
 }
 
 impl PageTask {
@@ -1058,7 +1280,7 @@ impl PageTask {
         match self {
             Self::Success(success) => &success.events,
             Self::Failure(failure) => &failure.events,
-            Self::Duplicate { events } => events,
+            Self::Duplicate { events, .. } => events,
         }
     }
 }
@@ -1151,7 +1373,7 @@ fn retry_delay(
     retry_after: Option<Duration>,
 ) -> Duration {
     if let Some(delay) = retry_after {
-        return delay.min(config.retry.max_delay);
+        return delay;
     }
     let factor = 1_u32
         .checked_shl(u32::from(attempt.saturating_sub(1)))
@@ -1179,7 +1401,7 @@ enum EmitState {
     BrokenPipe,
 }
 
-fn emit_record(
+async fn emit_record(
     sink: &Arc<dyn CrawlSink>,
     budget: &CrawlBudget,
     report: &mut CrawlReport,
@@ -1190,11 +1412,39 @@ fn emit_record(
     let mut counter = CountingWriter(0);
     serde_json::to_writer(&mut counter, &record)
         .map_err(|error| CrawlError::Output(error.to_string()))?;
-    budget.reserve_report_bytes(counter.0.saturating_add(1))?;
-    match sink.emit(&record) {
-        Ok(()) => {}
-        Err(CrawlSinkError::BrokenPipe) => return Ok(EmitState::BrokenPipe),
-        Err(CrawlSinkError::Other(error)) => return Err(CrawlError::Output(error)),
+    // Terminal diagnostics have a separate, bounded allowance so normal
+    // output exhaustion never discards the report or suppresses its summary.
+    let terminal = matches!(
+        &record,
+        CrawlRecord::Summary { .. }
+            | CrawlRecord::Event {
+                value: CrawlEvent::Complete { .. }
+            }
+    );
+    if !terminal
+        && (budget.output_exhausted()
+            || budget
+                .reserve_report_bytes(
+                    if collect && matches!(&record, CrawlRecord::Event { .. }) && !collect_events {
+                        0
+                    } else {
+                        counter.0.saturating_add(1)
+                    },
+                    collect,
+                )
+                .is_err())
+    {
+        return Ok(EmitState::Continue);
+    }
+    let allowance = if terminal {
+        Duration::from_millis(100)
+    } else {
+        budget.remaining_duration().unwrap_or(Duration::ZERO)
+    };
+    match tokio::time::timeout(allowance, sink.emit(&record)).await {
+        Ok(Ok(())) => {}
+        Err(_) | Ok(Err(CrawlSinkError::BrokenPipe)) => return Ok(EmitState::BrokenPipe),
+        Ok(Err(CrawlSinkError::Other(error))) => return Err(CrawlError::Output(error)),
     }
     if collect {
         match record {

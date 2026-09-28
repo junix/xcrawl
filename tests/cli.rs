@@ -11,6 +11,77 @@ fn run(args: &[&str]) -> Output {
 }
 
 #[test]
+fn a_real_full_stdout_pipe_cannot_hold_the_cli_open() {
+    use std::time::{Duration, Instant};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0; 4096];
+        let _ = socket.read(&mut request);
+        let body = format!(
+            "<html><article><h1>Backpressure</h1><p>{}</p></article></html>",
+            "A complete sentence for article extraction. ".repeat(16_000)
+        );
+        let _ = write!(
+            socket,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_xcrawl"))
+        .args([
+            &url,
+            "--ignore-robots",
+            "--allow-private-networks",
+            "--allow-nonstandard-ports",
+            "--max-depth",
+            "0",
+            "--delay",
+            "0ms",
+            "--max-crawl-duration",
+            "1s",
+            "--timeout",
+            "500ms",
+            "--dns-timeout",
+            "100ms",
+            "--retry-base-delay",
+            "10ms",
+            "--retry-max-delay",
+            "20ms",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if start.elapsed() > Duration::from_secs(3) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("blocked stdout defeated CLI deadline");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(1));
+    let mut retained = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_end(&mut retained)
+        .unwrap();
+    assert!(
+        retained.len() > 8192,
+        "large page never reached the blocked pipe"
+    );
+    server.join().unwrap();
+}
+
+#[test]
 fn help_exposes_security_outcome_and_resource_policies_without_build_path() {
     let output = run(&["--help"]);
     assert!(output.status.success());
@@ -484,7 +555,7 @@ fn the_default_jsonl_stream_emits_records_in_protocol_order() {
         .lines()
         .map(|line| serde_json::from_str(line).expect("every line is one JSON record"))
         .collect();
-    let good = format!("{}good", url);
+    let good = format!("{url}good");
     // One record per wire event: the seed request, its discovery, the page
     // event and page record, then the same pair for the linked page, then
     // the completion event and the summary. Requests precede the
@@ -519,7 +590,10 @@ fn the_default_jsonl_stream_emits_records_in_protocol_order() {
     assert_eq!(records[7]["value"]["outcome"], "complete");
     assert_eq!(records[8]["value"]["outcome"], "complete");
     assert_eq!(records[8]["value"]["stats"]["pages_crawled"], 2);
-    assert!(records[8]["value"].get("termination_reason").is_none());
+    assert_eq!(
+        records[8]["value"]["termination_reason"],
+        "frontier_exhausted"
+    );
 }
 
 #[test]
@@ -572,7 +646,7 @@ fn a_deadline_crawl_exits_one_and_names_the_deadline() {
     );
     assert_eq!(
         report["pages"].as_array().map(Vec::len),
-        Some(crawled as usize)
+        Some(usize::try_from(crawled).unwrap())
     );
 }
 

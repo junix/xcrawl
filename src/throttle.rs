@@ -22,6 +22,7 @@ struct OriginState {
     adaptive_delay: Duration,
     robots_delay: Duration,
     retry_after_deadline: Option<Instant>,
+    deferred: bool,
     consecutive_successes: u8,
     semaphore: Arc<Semaphore>,
 }
@@ -51,24 +52,36 @@ impl OriginScheduler {
             .acquire_owned()
             .await
             .expect("origin semaphore is never closed");
-        let sleep = {
-            let mut state = self.state.lock().expect("origin scheduler lock poisoned");
-            let now = Instant::now();
-            let origin = Self::state_for(&mut state, origin, self.max_in_flight);
-            let retry_after = origin.retry_after_deadline.unwrap_or(now);
-            let start = origin.next_request.max(retry_after).max(now);
-            let delay = self
-                .default_delay
-                .max(origin.robots_delay)
-                .max(origin.adaptive_delay);
-            origin.last_reserved_start = Some(start);
-            origin.next_request = start.checked_add(delay).unwrap_or(start);
-            start.saturating_duration_since(now)
-        };
-        if !sleep.is_zero() {
-            tokio::time::sleep(sleep).await;
+        loop {
+            let sleep = {
+                let mut state = self.state.lock().expect("origin scheduler lock poisoned");
+                let now = Instant::now();
+                let origin = Self::state_for(&mut state, origin, self.max_in_flight);
+                let retry_after = origin.retry_after_deadline.unwrap_or(now);
+                let start = origin.next_request.max(retry_after).max(now);
+                let delay = self
+                    .default_delay
+                    .max(origin.robots_delay)
+                    .max(origin.adaptive_delay);
+                if !origin.deferred && start <= now {
+                    origin.last_reserved_start = Some(now);
+                    if let Some(next) = now.checked_add(delay) {
+                        origin.next_request = next;
+                    } else {
+                        origin.deferred = true;
+                    }
+                    return OriginPermit { _permit: permit };
+                }
+                (!origin.deferred).then(|| start.saturating_duration_since(now))
+            };
+            let Some(sleep) = sleep else {
+                return std::future::pending().await;
+            };
+            if !sleep.is_zero() {
+                tokio::time::sleep(sleep).await;
+            }
+            // Another response may have extended the cooldown while we slept.
         }
-        OriginPermit { _permit: permit }
     }
 
     pub(crate) fn set_robots_delay(&self, origin_key: &str, delay: Duration) {
@@ -82,6 +95,8 @@ impl OriginScheduler {
                 .max(origin.adaptive_delay);
             if let Some(required_next) = last_start.checked_add(effective) {
                 origin.next_request = origin.next_request.max(required_next);
+            } else {
+                origin.deferred = true;
             }
         }
     }
@@ -95,12 +110,14 @@ impl OriginScheduler {
         let mut state = self.state.lock().expect("origin scheduler lock poisoned");
         let origin = Self::state_for(&mut state, origin_key, self.max_in_flight);
         if let Some(delay) = retry_after {
-            if let Some(deadline) = Instant::now().checked_add(delay.min(MAX_BACKOFF)) {
+            if let Some(deadline) = Instant::now().checked_add(delay) {
                 origin.retry_after_deadline = Some(
                     origin
                         .retry_after_deadline
                         .map_or(deadline, |current| current.max(deadline)),
                 );
+            } else {
+                origin.deferred = true;
             }
         }
         if status == 429 {
@@ -153,6 +170,7 @@ impl OriginScheduler {
                 adaptive_delay: Duration::ZERO,
                 robots_delay: Duration::ZERO,
                 retry_after_deadline: None,
+                deferred: false,
                 consecutive_successes: 0,
                 semaphore: Arc::new(Semaphore::new(max_in_flight)),
             }

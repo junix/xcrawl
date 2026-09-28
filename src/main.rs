@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{ArgAction, Parser, ValueEnum};
@@ -34,6 +34,14 @@ const LONG_HELP: &str = concat!(
 struct Cli {
     /// Absolute HTTP(S) seed URL.
     url: Url,
+
+    /// Private durable frontier directory; resumes unfinished work for this seed.
+    #[arg(long, help_heading = "Traversal")]
+    frontier_dir: Option<std::path::PathBuf>,
+
+    /// Private 0700 directory for raw snapshots and execution candidates (0600).
+    #[arg(long, help_heading = "Output")]
+    private_output: Option<std::path::PathBuf>,
 
     /// Maximum logical pages scheduled.
     #[arg(long, default_value_t = 100, help_heading = "Traversal")]
@@ -116,7 +124,7 @@ struct Cli {
     #[arg(long, help_heading = "Robots")]
     ignore_robots: bool,
 
-    /// Maximum accepted Crawl-delay/request-rate interval.
+    /// Legacy compatibility option; longer server delays are always honored.
     #[arg(long, default_value = "60s", value_parser = parse_duration, help_heading = "Robots")]
     max_robots_delay: Duration,
 
@@ -170,7 +178,7 @@ struct Cli {
     #[arg(long, default_value = "100ms", value_parser = parse_duration, help_heading = "Retry")]
     retry_base_delay: Duration,
 
-    /// Maximum retry and Retry-After delay.
+    /// Maximum local exponential backoff; Retry-After is never shortened.
     #[arg(long, default_value = "5s", value_parser = parse_duration, help_heading = "Retry")]
     retry_max_delay: Duration,
 
@@ -205,6 +213,10 @@ struct Cli {
     /// Maximum bytes in a collected JSON report.
     #[arg(long, default_value = "64MiB", value_parser = parse_byte_size, help_heading = "Limits")]
     max_report_bytes: usize,
+
+    /// Maximum streamed record bytes; terminal diagnostics have a separate 8 KiB allowance.
+    #[arg(long, default_value = "64MiB", value_parser = parse_byte_size, help_heading = "Resource limits")]
+    max_stream_bytes: usize,
 
     /// Validate and print the effective plan without network access.
     #[arg(long, help_heading = "Output")]
@@ -345,15 +357,97 @@ impl Cli {
         config.limits.max_response_bytes = self.max_response_bytes;
         config.limits.max_robots_bytes = self.max_robots_bytes;
         config.limits.max_report_bytes = self.max_report_bytes;
+        config.limits.max_stream_bytes = self.max_stream_bytes;
         config.output.collect_events = matches!(self.format, FormatArg::Json);
         config.output.redact_query_values = !self.include_query_values;
+        config
+            .output
+            .private_directory
+            .clone_from(&self.private_output);
         config.validate()?;
         Ok(config)
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("__xcrawl_output") {
+        if worker_limits(false).is_err() {
+            return ExitCode::FAILURE;
+        }
+        return output_worker();
+    }
+    if std::env::args().nth(1).as_deref() == Some("__xcrawl_analyze") {
+        use std::io::Read;
+        use xcrawl::PageAnalyzer;
+        if worker_limits(true).is_err() {
+            return ExitCode::FAILURE;
+        }
+        let input: xcrawl::PageInput =
+            match serde_json::from_reader(io::stdin().take(64 * 1024 * 1024)) {
+                Ok(input) => input,
+                Err(_) => return ExitCode::FAILURE,
+            };
+        let analysis = xcrawl::ReadabilitiesAnalyzer::default().analyze(input);
+        return if serde_json::to_writer(io::stdout(), &analysis).is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+    match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(run_main()),
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+fn worker_limits(analysis: bool) -> io::Result<()> {
+    use rustix::process::{Resource, Rlimit, setrlimit};
+    setrlimit(
+        Resource::Core,
+        Rlimit {
+            current: Some(0),
+            maximum: Some(0),
+        },
+    )?;
+    if analysis {
+        setrlimit(
+            Resource::Cpu,
+            Rlimit {
+                current: Some(30),
+                maximum: Some(30),
+            },
+        )?;
+        #[cfg(target_os = "linux")]
+        setrlimit(
+            Resource::As,
+            Rlimit {
+                current: Some(1024 * 1024 * 1024),
+                maximum: Some(1024 * 1024 * 1024),
+            },
+        )?;
+    }
+    let parent = std::env::var("XCRAWL_PARENT_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or_else(|| io::Error::other("missing worker parent"))?;
+    std::thread::spawn(move || {
+        loop {
+            if rustix::process::getppid()
+                .is_none_or(|pid| u32::try_from(pid.as_raw_pid()).ok() != Some(parent))
+            {
+                std::process::exit(1);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+    Ok(())
+}
+
+async fn run_main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
     let config = match cli.crawl_config() {
@@ -361,20 +455,51 @@ async fn main() -> ExitCode {
         Err(error) => return report_crawl_error(&error),
     };
     let crawler = match Crawler::new(config.clone()) {
-        Ok(crawler) => crawler,
+        Ok(crawler) => match std::env::current_exe() {
+            Ok(executable) => crawler.with_analysis_worker(executable),
+            Err(error) => return report_crawl_error(&CrawlError::Analysis(error.to_string())),
+        },
         Err(error) => return report_crawl_error(&error),
     };
     if let Err(error) = crawler.validate_seed(&cli.url) {
         return report_crawl_error(&error);
     }
     if cli.dry_run {
-        return emit_json(&crawl_plan(&cli.url, &config), cli.compact);
+        return emit_json(
+            &crawl_plan(&cli.url, &config),
+            cli.compact,
+            Duration::from_secs(1),
+        )
+        .await;
     }
+    let output_deadline = tokio::time::Instant::now() + config.limits.max_crawl_duration;
+
+    let frontier: Arc<dyn xcrawl::Frontier> = if let Some(directory) = &cli.frontier_dir {
+        match xcrawl::DurableFrontier::open(directory, config.limits.max_frontier_entries) {
+            Ok(frontier) => Arc::new(frontier),
+            Err(error) => return report_crawl_error(&error),
+        }
+    } else {
+        Arc::new(xcrawl::InMemoryFrontier::new(
+            config.traversal.strategy,
+            config.limits.max_frontier_entries,
+        ))
+    };
 
     match cli.format {
-        FormatArg::Json => match crawler.crawl(&cli.url).await {
+        FormatArg::Json => match crawler
+            .crawl_collect_with_frontier(&cli.url, frontier)
+            .await
+        {
             Ok(report) => {
-                let output = emit_json(&report, cli.compact);
+                let output = emit_json(
+                    &report,
+                    cli.compact,
+                    output_deadline
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .max(Duration::from_millis(100)),
+                )
+                .await;
                 if output == ExitCode::SUCCESS {
                     outcome_exit(report.outcome, cli.allow_partial, cli.fail_on_any_error)
                 } else {
@@ -384,8 +509,14 @@ async fn main() -> ExitCode {
             Err(error) => report_crawl_error(&error),
         },
         FormatArg::Jsonl => {
-            let sink: Arc<dyn CrawlSink> = Arc::new(JsonLinesSink::default());
-            match crawler.crawl_with_sink(&cli.url, sink).await {
+            let sink: Arc<dyn CrawlSink> = match JsonLinesSink::new() {
+                Ok(sink) => Arc::new(sink),
+                Err(error) => return report_crawl_error(&CrawlError::Output(error.to_string())),
+            };
+            match crawler
+                .crawl_with_frontier_and_sink(&cli.url, frontier, sink)
+                .await
+            {
                 Ok(summary) => {
                     outcome_exit(summary.outcome, cli.allow_partial, cli.fail_on_any_error)
                 }
@@ -398,44 +529,92 @@ async fn main() -> ExitCode {
 
 #[derive(Debug)]
 struct JsonLinesSink {
-    stdout: Mutex<io::Stdout>,
+    child: tokio::sync::Mutex<tokio::process::Child>,
 }
 
-impl Default for JsonLinesSink {
-    fn default() -> Self {
-        Self {
-            stdout: Mutex::new(io::stdout()),
-        }
+impl JsonLinesSink {
+    fn new() -> io::Result<Self> {
+        let child = tokio::process::Command::new(std::env::current_exe()?)
+            .arg("__xcrawl_output")
+            .env("XCRAWL_PARENT_PID", std::process::id().to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        Ok(Self {
+            child: tokio::sync::Mutex::new(child),
+        })
+    }
+    async fn write_bytes(&self, bytes: &[u8]) -> std::result::Result<(), CrawlSinkError> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut child = self.child.lock().await;
+        child
+            .stdin
+            .as_mut()
+            .expect("piped input")
+            .write_u64(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .await
+            .map_err(|_| CrawlSinkError::BrokenPipe)?;
+        child
+            .stdin
+            .as_mut()
+            .expect("piped input")
+            .write_all(bytes)
+            .await
+            .map_err(|_| CrawlSinkError::BrokenPipe)?;
+        // Acknowledge only bytes delivered to stdout, not merely buffered in
+        // the pipe. Dropping the sink kills an indefinitely blocked writer.
+        child
+            .stderr
+            .as_mut()
+            .expect("piped acknowledgement")
+            .read_u8()
+            .await
+            .map_err(|_| CrawlSinkError::BrokenPipe)?;
+        Ok(())
     }
 }
 
+#[async_trait::async_trait]
 impl CrawlSink for JsonLinesSink {
-    fn emit(&self, record: &CrawlRecord) -> std::result::Result<(), CrawlSinkError> {
-        let mut stdout = self
-            .stdout
-            .lock()
-            .map_err(|error| CrawlSinkError::Other(error.to_string()))?;
-        serde_json::to_writer(&mut *stdout, record).map_err(|error| {
-            if error.io_error_kind() == Some(io::ErrorKind::BrokenPipe) {
-                CrawlSinkError::BrokenPipe
-            } else {
-                CrawlSinkError::Other(error.to_string())
-            }
-        })?;
-        writeln!(stdout).map_err(|error| {
-            if error.kind() == io::ErrorKind::BrokenPipe {
-                CrawlSinkError::BrokenPipe
-            } else {
-                CrawlSinkError::Other(error.to_string())
-            }
-        })?;
-        stdout.flush().map_err(|error| {
-            if error.kind() == io::ErrorKind::BrokenPipe {
-                CrawlSinkError::BrokenPipe
-            } else {
-                CrawlSinkError::Other(error.to_string())
-            }
-        })
+    async fn emit(&self, record: &CrawlRecord) -> std::result::Result<(), CrawlSinkError> {
+        let mut bytes =
+            serde_json::to_vec(record).map_err(|e| CrawlSinkError::Other(e.to_string()))?;
+        bytes.push(b'\n');
+        self.write_bytes(&bytes).await
+    }
+}
+
+fn output_worker() -> ExitCode {
+    use std::io::Read;
+    let input = io::stdin();
+    let mut input = input.lock();
+    let mut output = io::stdout().lock();
+    let mut ack = io::stderr().lock();
+    let mut line = Vec::new();
+    loop {
+        let mut size = [0_u8; 8];
+        if input.read_exact(&mut size).is_err() {
+            return ExitCode::SUCCESS;
+        }
+        let size = u64::from_be_bytes(size);
+        if size > 256 * 1024 * 1024 {
+            return ExitCode::FAILURE;
+        }
+        line.resize(usize::try_from(size).expect("bounded size"), 0);
+        if input.read_exact(&mut line).is_err() {
+            return ExitCode::FAILURE;
+        }
+        if output
+            .write_all(&line)
+            .and_then(|()| output.flush())
+            .and_then(|()| ack.write_all(&[1]))
+            .and_then(|()| ack.flush())
+            .is_err()
+        {
+            return ExitCode::FAILURE;
+        }
     }
 }
 
@@ -456,7 +635,7 @@ fn crawl_plan(url: &Url, config: &CrawlConfig) -> serde_json::Value {
     json!({
         "schema_version": 2,
         "dry_run": true,
-        "seed_url": url,
+        "seed_url": if config.output.redact_query_values { xcrawl::safe_url(url) } else { url.to_string() },
         "config": {
             "traversal": {
                 "max_depth": config.traversal.max_depth,
@@ -501,6 +680,7 @@ fn crawl_plan(url: &Url, config: &CrawlConfig) -> serde_json::Value {
                 "max_response_bytes": config.limits.max_response_bytes,
                 "max_robots_bytes": config.limits.max_robots_bytes,
                 "max_report_bytes": config.limits.max_report_bytes,
+                "max_stream_bytes": config.limits.max_stream_bytes,
             },
             "network": {
                 "deny_non_global": config.network.deny_non_global,
@@ -529,28 +709,22 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn emit_json(value: &impl Serialize, compact: bool) -> ExitCode {
-    let stdout = io::stdout();
-    let mut stdout = stdout.lock();
+async fn emit_json(value: &impl Serialize, compact: bool, allowance: Duration) -> ExitCode {
     let result = if compact {
-        serde_json::to_writer(&mut stdout, value)
+        serde_json::to_vec(value)
     } else {
-        serde_json::to_writer_pretty(&mut stdout, value)
+        serde_json::to_vec_pretty(value)
     };
-    if let Err(error) = result {
-        if error.io_error_kind() == Some(io::ErrorKind::BrokenPipe) {
-            return ExitCode::SUCCESS;
-        }
-        eprintln!("failed to serialize JSON output: {error}");
+    let Ok(mut bytes) = result else {
         return ExitCode::FAILURE;
-    }
-    match writeln!(stdout) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("failed to write JSON output: {error}");
-            ExitCode::FAILURE
-        }
+    };
+    bytes.push(b'\n');
+    let Ok(sink) = JsonLinesSink::new() else {
+        return ExitCode::FAILURE;
+    };
+    match tokio::time::timeout(allowance, sink.write_bytes(&bytes)).await {
+        Ok(Ok(()) | Err(CrawlSinkError::BrokenPipe)) => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
     }
 }
 

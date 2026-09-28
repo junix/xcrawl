@@ -1,0 +1,8 @@
+pm lint: 1 selected, 1 evaluated
+catalog v7; policy ~/projects/pm-data/lint.json (sha256 e5282bfde11f); just 1.46.0
+
+DEP001  dep-stale-git-pin  warning  1 finding(s)
+  - crawler/xcrawl #dep:readabilities-rs: xcrawl pins readabilities-rs at g5165267 which is not in the checkout's history (diverged or rewritten): re-resolve the pin
+  details: pm lint rules DEP001
+
+0 error, 1 warning, 0 info (0 waived); 0 could not be verified; fail-on error → exit 0

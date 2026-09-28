@@ -22,6 +22,11 @@ jobs:
           path: readabilities/readabilities-rs
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - name: Install minimum supported Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Check minimum supported Rust
+        working-directory: xcrawl
+        run: cargo +1.88.0 check --locked --all-targets
       - name: Verify
         working-directory: xcrawl
         run: |

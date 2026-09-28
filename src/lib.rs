@@ -1,6 +1,6 @@
 //! Bounded web crawling with page understanding delegated to `readabilities-rs`.
 //!
-//! `xcrawl` owns traversal and acquisition. It fetches each URL exactly once,
+//! `xcrawl` owns traversal and acquisition. It deduplicates URLs by minimum depth,
 //! then passes the immutable response snapshot to `readabilities-rs` for
 //! decoding, full-page link discovery, metadata, and article extraction.
 
@@ -8,10 +8,12 @@ mod analyzer;
 mod budget;
 mod config;
 mod crawler;
+mod durable_frontier;
 mod error;
 mod fetch;
 mod frontier;
 mod model;
+mod resource;
 mod robots;
 mod throttle;
 
@@ -22,7 +24,9 @@ pub use config::{
     TraversalPolicy,
 };
 pub use crawler::Crawler;
+pub use durable_frontier::DurableFrontier;
 pub use error::{CrawlError, Result};
+pub use fetch::safe_url;
 pub use frontier::{EnqueueResult, Frontier, FrontierEntry, InMemoryFrontier};
 pub use model::{
     AnalysisError, AnalysisWarning, AnalyzedArticle, AnalyzedLink, ArticleMetadata,
@@ -30,6 +34,7 @@ pub use model::{
     CrawlPage, CrawlRecord, CrawlReport, CrawlSink, CrawlSinkError, CrawlStats, CrawlSummary,
     FailureKind, NullCrawlSink, PageAnalysis, PageRobots, RequestKind, RobotsDecision,
 };
+pub use resource::ResourceCandidate;
 pub use robots::{RobotsRules, RobotsState};
 
 /// Library version.

@@ -98,7 +98,7 @@ async fn retry_after_blocks_the_next_attempt() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn retry_after_is_capped_at_sixty_seconds() {
+async fn retry_after_is_not_shortened_by_local_backoff_limit() {
     let scheduler = OriginScheduler::new(Duration::ZERO, 1);
     drop(scheduler.acquire("example:443").await);
     scheduler.record_response("example:443", 503, Some(Duration::from_secs(5 * 60)));
@@ -106,6 +106,23 @@ async fn retry_after_is_capped_at_sixty_seconds() {
     drop(scheduler.acquire("example:443").await);
     assert_eq!(
         Instant::now().duration_since(start),
-        Duration::from_secs(60)
+        Duration::from_secs(5 * 60)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn sleeping_waiter_observes_extended_cooldown() {
+    let scheduler = Arc::new(OriginScheduler::new(Duration::from_secs(1), 2));
+    let first = scheduler.acquire("example:443").await;
+    let waiter_scheduler = Arc::clone(&scheduler);
+    let started = Instant::now();
+    let waiter = tokio::spawn(async move { waiter_scheduler.acquire("example:443").await });
+    tokio::task::yield_now().await;
+    scheduler.record_response("example:443", 429, Some(Duration::from_secs(300)));
+    drop(first);
+    drop(waiter.await.unwrap());
+    assert_eq!(
+        Instant::now().duration_since(started),
+        Duration::from_secs(300)
     );
 }

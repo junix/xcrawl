@@ -1,4 +1,13 @@
 use super::*;
+
+#[test]
+fn long_crawl_delays_are_never_discarded() {
+    let rules = RobotsRules::parse_with_max_delay(
+        "User-agent: *\nCrawl-delay: 300\n",
+        Duration::from_secs(60),
+    );
+    assert_eq!(rules.crawl_delay("xcrawl"), Some(Duration::from_secs(300)));
+}
 use proptest::prelude::*;
 
 #[test]
@@ -23,13 +32,13 @@ fn percent_encoding_wildcards_and_equal_allow_are_conformant() {
 }
 
 #[test]
-fn request_rate_uses_numerator_and_extreme_delays_are_ignored() {
+fn request_rate_uses_numerator_and_extreme_delays_defer_the_origin() {
     let rules = RobotsRules::parse(
         "User-agent: a\nRequest-rate: 100/10\n\
              User-agent: b\nCrawl-delay: 1e300\n",
     );
     assert_eq!(rules.crawl_delay("a"), Some(Duration::from_millis(100)));
-    assert_eq!(rules.crawl_delay("b"), None);
+    assert_eq!(rules.crawl_delay("b"), Some(Duration::MAX));
 }
 
 #[test]

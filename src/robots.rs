@@ -178,13 +178,12 @@ impl RobotsRules {
     }
 }
 
-fn parse_delay(value: &str, max_delay: Duration) -> Option<Duration> {
+fn parse_delay(value: &str, _max_delay: Duration) -> Option<Duration> {
     value
         .parse::<f64>()
         .ok()
         .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
-        .filter(|delay| *delay <= max_delay)
+        .map(|seconds| Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX))
 }
 
 fn parse_request_rate(value: &str, max_delay: Duration) -> Option<Duration> {
@@ -241,21 +240,21 @@ fn normalize_for_match(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) =
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(high), Some(low)) =
                 (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
-            {
-                let decoded = high * 16 + low;
-                if decoded.is_ascii() && is_unreserved(decoded) {
-                    result.push(char::from(decoded));
-                } else {
-                    result.push('%');
-                    result.push(hex_digit(decoded >> 4));
-                    result.push(hex_digit(decoded & 0x0f));
-                }
-                index += 3;
-                continue;
+        {
+            let decoded = high * 16 + low;
+            if decoded.is_ascii() && is_unreserved(decoded) {
+                result.push(char::from(decoded));
+            } else {
+                result.push('%');
+                result.push(hex_digit(decoded >> 4));
+                result.push(hex_digit(decoded & 0x0f));
             }
+            index += 3;
+            continue;
         }
         let byte = bytes[index];
         if byte.is_ascii() {

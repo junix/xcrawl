@@ -38,6 +38,7 @@ const DEFAULT_DENIED_CIDRS: &[&str] = &[
     "100::/64",
     "100:0:0:1::/64",
     "2001::/23",
+    "2001:db8::/32",
     "2002::/16",
     "3fff::/20",
     "5f00::/16",
@@ -126,18 +127,17 @@ impl OneHopTransport {
             .map_err(|error| map_reqwest_error(&error))?;
         let status = response.status().as_u16();
         let headers = response_headers(response.headers());
-        if is_followed_redirect(status) {
-            if let Some(location) = response
+        if is_followed_redirect(status)
+            && let Some(location) = response
                 .headers()
                 .get(reqwest::header::LOCATION)
                 .and_then(|value| value.to_str().ok())
-            {
-                return Ok(HopOutcome::Redirect {
-                    status,
-                    location: location.to_string(),
-                    headers,
-                });
-            }
+        {
+            return Ok(HopOutcome::Redirect {
+                status,
+                location: location.to_string(),
+                headers,
+            });
         }
         if !(200..300).contains(&status) {
             return Ok(HopOutcome::Response(HopResponse {
@@ -198,7 +198,7 @@ impl OneHopTransport {
 /// XHTML, every `text/*` type, and the JSON/XML application families are
 /// decodable document bodies; anything else — including a missing
 /// Content-Type header — is not worth a single downloaded byte.
-fn is_decodable_content_type(content_type: Option<&str>) -> bool {
+pub(crate) fn is_decodable_content_type(content_type: Option<&str>) -> bool {
     let Some(raw) = content_type else {
         return false;
     };
@@ -208,6 +208,9 @@ fn is_decodable_content_type(content_type: Option<&str>) -> bool {
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    if mime.contains("mpegurl") || mime == "application/dash+xml" {
+        return false;
+    }
     if mime == "text/html" || mime == "application/xhtml+xml" {
         return true;
     }
@@ -358,10 +361,11 @@ pub(crate) fn validate_url(url: &Url, policy: &NetworkPolicy) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn safe_url(url: &Url) -> String {
+pub fn safe_url(url: &Url) -> String {
     let mut safe = url.clone();
     let _ = safe.set_username("");
     let _ = safe.set_password(None);
+    safe.set_fragment(None);
     if safe.query().is_some() {
         let pairs = safe
             .query_pairs()

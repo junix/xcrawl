@@ -90,8 +90,10 @@ pub struct AnalysisError {
     pub retry: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PageAnalysis {
+    #[serde(default)]
+    pub resources: Vec<crate::ResourceCandidate>,
     pub article: Option<AnalyzedArticle>,
     pub article_error: Option<AnalysisError>,
     pub links: Vec<AnalyzedLink>,
@@ -104,6 +106,10 @@ pub struct PageAnalysis {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrawlPage {
+    /// Relative to the private output directory; never a public content URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
+    pub resources: Vec<crate::ResourceCandidate>,
     pub requested_url: Url,
     pub final_url: Url,
     pub redirect_chain: Vec<Url>,
@@ -111,6 +117,8 @@ pub struct CrawlPage {
     pub status: u16,
     pub content_type: Option<String>,
     pub body_bytes: usize,
+    /// `analyzed` or `skipped_unsupported_content_type`; binary bodies stay out of memory.
+    pub analysis_status: String,
     pub detected_encoding: String,
     pub decode_errors: bool,
     pub canonical_url: Option<Url>,
@@ -178,6 +186,11 @@ pub enum RobotsDecision {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CrawlStats {
+    pub frontier_rejected: usize,
+    pub pages_fetched: usize,
+    pub pages_analyzed: usize,
+    pub pages_skipped: usize,
+    pub unfinished: usize,
     pub pages_crawled: usize,
     pub pages_failed: usize,
     pub urls_discovered: usize,
@@ -266,8 +279,10 @@ pub enum CrawlRecord {
     Summary { value: CrawlSummary },
 }
 
+#[async_trait::async_trait]
 pub trait CrawlSink: Send + Sync {
-    fn emit(&self, record: &CrawlRecord) -> std::result::Result<(), CrawlSinkError>;
+    /// Must yield while waiting for output; dropping this future cancels a write.
+    async fn emit(&self, record: &CrawlRecord) -> std::result::Result<(), CrawlSinkError>;
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -281,8 +296,9 @@ pub enum CrawlSinkError {
 #[derive(Debug, Default)]
 pub struct NullCrawlSink;
 
+#[async_trait::async_trait]
 impl CrawlSink for NullCrawlSink {
-    fn emit(&self, _record: &CrawlRecord) -> std::result::Result<(), CrawlSinkError> {
+    async fn emit(&self, _record: &CrawlRecord) -> std::result::Result<(), CrawlSinkError> {
         Ok(())
     }
 }

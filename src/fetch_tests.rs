@@ -1,4 +1,17 @@
 use super::*;
+
+#[test]
+fn shared_network_policy_corpus() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../contracts/network-policy-v1.json")).unwrap();
+    for (ip, allowed) in corpus["addresses"].as_object().unwrap() {
+        assert_eq!(
+            guard().validate_ip(ip.parse().unwrap()).is_ok(),
+            allowed.as_bool().unwrap(),
+            "{ip}"
+        );
+    }
+}
 use crate::config::PortPolicy;
 
 fn guard() -> NetworkGuard {
