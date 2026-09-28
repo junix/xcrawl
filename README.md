@@ -133,8 +133,9 @@ REST/MCP bindings, and LLM extraction remain outside this runtime.
 just check-all
 ```
 
-CI checks formatting, Clippy and tests on stable, and checks the declared Rust
-1.88 MSRV. The pinned analyzer already depends on scraper 0.26, whose let-chain
+Run formatting, Clippy and tests locally with `just check-all`, and check the
+declared Rust 1.88 MSRV with `cargo +1.88.0 check --locked --all-targets`.
+The pinned analyzer already depends on scraper 0.26, whose let-chain
 syntax requires Rust 1.88; the former 1.85 declaration was inaccurate.
 Local execution evidence and the remaining coverage boundary are recorded in
 [the validation report](docs/VALIDATION.md).
