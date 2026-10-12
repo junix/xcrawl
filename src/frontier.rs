@@ -4,12 +4,30 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use url::Url;
 
-use crate::{CrawlError, CrawlStrategy, Result};
+use crate::{CrawlError, CrawlStrategy, EntryKind, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FrontierEntry {
     pub url: Url,
     pub depth: usize,
+    /// Older checkpoints predate enumeration entries and decode as pages.
+    #[serde(default)]
+    pub kind: EntryKind,
+}
+
+/// Conditional-fetch validators retained for an enumeration document so a
+/// recovered claim can ask the server whether the body changed instead of
+/// unconditionally re-downloading it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FrontierValidators {
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+impl FrontierValidators {
+    pub fn is_empty(&self) -> bool {
+        self.etag.is_none() && self.last_modified.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -38,6 +56,14 @@ pub trait Frontier: Send + Sync {
         children: Vec<FrontierEntry>,
     ) -> Result<EnqueueResult> {
         self.enqueue_if_new(children).await
+    }
+    /// Validators retained for a previously fetched enumeration document.
+    async fn validators(&self, _url: &Url) -> Result<Option<FrontierValidators>> {
+        Ok(None)
+    }
+    /// Retain validators for an enumeration document before it is acknowledged.
+    async fn store_validators(&self, _url: &Url, _validators: &FrontierValidators) -> Result<()> {
+        Ok(())
     }
     /// Release this run's outstanding claims on graceful termination.
     async fn release_claims(&self) -> Result<()> {

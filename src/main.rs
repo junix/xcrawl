@@ -43,6 +43,24 @@ struct Cli {
     #[arg(long, help_heading = "Output")]
     private_output: Option<std::path::PathBuf>,
 
+    /// Sitemap or sitemap-index URL expanded before traversal; repeatable.
+    #[arg(
+        long,
+        value_name = "URL",
+        action = ArgAction::Append,
+        help_heading = "Enumeration"
+    )]
+    sitemap: Vec<Url>,
+
+    /// RSS/Atom feed URL expanded before traversal; repeatable.
+    #[arg(
+        long,
+        value_name = "URL",
+        action = ArgAction::Append,
+        help_heading = "Enumeration"
+    )]
+    feed: Vec<Url>,
+
     /// Maximum logical pages scheduled.
     #[arg(long, default_value_t = 100, help_heading = "Traversal")]
     max_pages: usize,
@@ -364,6 +382,8 @@ impl Cli {
             .output
             .private_directory
             .clone_from(&self.private_output);
+        config.enumeration.sitemaps.clone_from(&self.sitemap);
+        config.enumeration.feeds.clone_from(&self.feed);
         config.validate()?;
         Ok(config)
     }
@@ -689,6 +709,10 @@ fn crawl_plan(url: &Url, config: &CrawlConfig) -> serde_json::Value {
             },
             "output": {
                 "redact_query_values": config.output.redact_query_values,
+            },
+            "enumeration": {
+                "sitemaps": enumerated_urls(&config.enumeration.sitemaps, config.output.redact_query_values),
+                "feeds": enumerated_urls(&config.enumeration.feeds, config.output.redact_query_values),
             }
         }
     })
@@ -707,6 +731,18 @@ fn outcome_exit(outcome: CrawlOutcome, allow_partial: bool, _fail_on_any_error: 
 
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn enumerated_urls(urls: &[Url], redact: bool) -> Vec<String> {
+    urls.iter()
+        .map(|url| {
+            if redact {
+                xcrawl::safe_url(url)
+            } else {
+                url.to_string()
+            }
+        })
+        .collect()
 }
 
 async fn emit_json(value: &impl Serialize, compact: bool, allowance: Duration) -> ExitCode {

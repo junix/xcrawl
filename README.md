@@ -65,6 +65,14 @@ from reports by default; `--include-query-values` explicitly disables that
 protection. `--dry-run` validates the complete grouped policy without touching
 the network.
 
+Repeatable `--sitemap` and `--feed` URLs join the seed as enumeration
+documents: sitemap indexes and urlsets (including gzip-wrapped files), RSS
+channels, and Atom feeds. Their entries become ordinary frontier pages, so the
+same scope, robots, depth, and byte budgets still govern what is fetched. A
+recovered durable-frontier claim for one of these documents re-requests it
+conditionally (`If-None-Match`/`If-Modified-Since`); a 304 answer re-expands
+the retained private snapshot instead of downloading the body again.
+
 Important policy flags include:
 
 | Policy | Flags |
@@ -77,6 +85,7 @@ Important policy flags include:
 | Network | `--dns-timeout`, `--timeout`, `--allow-private-networks`, `--allow-nonstandard-ports` |
 | Global limits | `--max-http-requests`, `--max-total-download-bytes`, `--max-unique-origins`, `--max-frontier-entries`, `--max-url-length`, `--max-crawl-duration`, `--max-report-bytes`, `--max-stream-bytes` |
 | Persistence | `--frontier-dir`, `--private-output` |
+| Enumeration | `--sitemap`, `--feed` |
 | Outcome | `--allow-partial`, `--fail-on-any-error` |
 
 Exit codes are stable:

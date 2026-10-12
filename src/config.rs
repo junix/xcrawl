@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::{CrawlError, Result};
 
@@ -244,6 +245,14 @@ impl Default for OutputPolicy {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnumerationPolicy {
+    /// Sitemap or sitemap-index URLs expanded before page traversal.
+    pub sitemaps: Vec<Url>,
+    /// RSS/Atom feed URLs expanded before page traversal.
+    pub feeds: Vec<Url>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CrawlConfig {
     pub traversal: TraversalPolicy,
@@ -253,6 +262,7 @@ pub struct CrawlConfig {
     pub retry: RetryPolicy,
     pub limits: ResourceLimits,
     pub output: OutputPolicy,
+    pub enumeration: EnumerationPolicy,
 }
 
 impl CrawlConfig {
@@ -350,6 +360,20 @@ impl CrawlConfig {
             return Err(CrawlError::InvalidConfig(
                 "explicit port policy must contain at least one port".to_string(),
             ));
+        }
+        for (url, label) in self
+            .enumeration
+            .sitemaps
+            .iter()
+            .map(|url| (url, "sitemap"))
+            .chain(self.enumeration.feeds.iter().map(|url| (url, "feed")))
+        {
+            crate::fetch::validate_url(url, &self.network)?;
+            if url.as_str().len() > limits.max_url_length {
+                return Err(CrawlError::InvalidConfig(format!(
+                    "{label} URL exceeds the URL length limit"
+                )));
+            }
         }
         Ok(())
     }

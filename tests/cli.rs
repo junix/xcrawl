@@ -866,3 +866,39 @@ fn partial_site() -> (String, thread::JoinHandle<()>) {
     });
     (format!("http://{address}/"), handle)
 }
+
+#[test]
+fn enumeration_seeds_appear_in_the_plan_and_reject_non_http_inputs() {
+    let output = run(&[
+        "https://example.com",
+        "--sitemap",
+        "https://example.com/sitemap.xml",
+        "--sitemap",
+        "https://example.com/news.xml",
+        "--feed",
+        "https://example.com/feed.xml",
+        "--dry-run",
+        "--compact",
+    ]);
+    assert!(output.status.success());
+    let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        plan["config"]["enumeration"]["sitemaps"],
+        serde_json::json!([
+            "https://example.com/sitemap.xml",
+            "https://example.com/news.xml"
+        ])
+    );
+    assert_eq!(
+        plan["config"]["enumeration"]["feeds"],
+        serde_json::json!(["https://example.com/feed.xml"])
+    );
+
+    let invalid = run(&[
+        "https://example.com",
+        "--sitemap",
+        "ftp://example.com/sitemap.xml",
+        "--dry-run",
+    ]);
+    assert_eq!(invalid.status.code(), Some(3));
+}

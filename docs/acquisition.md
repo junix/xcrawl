@@ -71,6 +71,17 @@ Robots 429 is temporary unavailability, not an allow rule. The shared
 `contracts/network-policy-v1.json` corpus checks the Rust and Go address policy,
 including IPv6 documentation ranges and IPv4-embedded forms.
 
-Browser capture, session refresh, sitemap/feed expansion, collections and live
-recording are not implemented here. See streamforge's acquisition contract for
-the isolated media boundary and its explicit backend capabilities.
+Enumeration seeds are implemented: repeatable `--sitemap`/`--feed` URLs expand
+sitemap indexes, urlsets (including gzip-wrapped files), RSS channels, and
+Atom feeds into ordinary frontier pages under the same scope, robots, depth,
+and byte budgets. Sitemap index children stay sitemap entries, so nested
+indexes are followed within the depth bound, and a page report carries
+`enumerated_sitemap`/`enumerated_feed` with its discovered links. The raw
+document body is snapshotted and its ETag/Last-Modified validators are durably
+retained before expansion; a recovered claim re-requests conditionally and a
+304 re-expands the retained snapshot without re-downloading. A completed
+enumeration seed, like any completed entry, causes no refetch.
+
+Browser capture, session refresh, collections and live recording are not
+implemented here. See streamforge's acquisition contract for the isolated
+media boundary and its explicit backend capabilities.

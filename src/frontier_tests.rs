@@ -6,6 +6,7 @@ async fn shorter_discovery_requeues_even_at_capacity() {
     let mut entry = FrontierEntry {
         url: Url::parse("https://example.test/x").unwrap(),
         depth: 3,
+        kind: EntryKind::Page,
     };
     frontier.enqueue_if_new(vec![entry.clone()]).await.unwrap();
     frontier.pop().await.unwrap();
@@ -27,6 +28,7 @@ async fn enqueue_and_seen_reservation_are_atomic() {
     let entry = FrontierEntry {
         url: Url::parse("https://example.test/a#fragment").unwrap(),
         depth: 3,
+        kind: EntryKind::Page,
     };
     let first = frontier.enqueue_if_new(vec![entry.clone()]).await.unwrap();
     assert_eq!(first.enqueued.len(), 1);
@@ -51,6 +53,7 @@ async fn capacity_bounds_seen_and_queue_state() {
         .map(|path| FrontierEntry {
             url: Url::parse(&format!("https://example.test/{path}")).unwrap(),
             depth: 0,
+            kind: EntryKind::Page,
         })
         .collect();
     let result = frontier.enqueue_if_new(entries).await.unwrap();
@@ -65,6 +68,7 @@ async fn capacity_bounds_seen_and_queue_state() {
         .enqueue_if_new(vec![FrontierEntry {
             url: Url::parse("https://example.test/b").unwrap(),
             depth: 0,
+            kind: EntryKind::Page,
         }])
         .await
         .unwrap();
@@ -86,6 +90,7 @@ async fn normalization_variations_dedupe_to_one_entry() {
         .map(|raw| FrontierEntry {
             url: Url::parse(raw).unwrap(),
             depth: 0,
+            kind: EntryKind::Page,
         })
         .collect();
     let result = frontier.enqueue_if_new(entries).await.unwrap();
@@ -108,6 +113,7 @@ async fn pop_order_follows_the_configured_strategy() {
             .map(|path| FrontierEntry {
                 url: Url::parse(&format!("https://example.test/{path}")).unwrap(),
                 depth: 0,
+                kind: EntryKind::Page,
             })
             .collect();
         assert_eq!(

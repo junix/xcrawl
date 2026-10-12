@@ -117,7 +117,8 @@ pub struct CrawlPage {
     pub status: u16,
     pub content_type: Option<String>,
     pub body_bytes: usize,
-    /// `analyzed` or `skipped_unsupported_content_type`; binary bodies stay out of memory.
+    /// `analyzed`, `skipped_unsupported_content_type`, `enumerated_sitemap`,
+    /// or `enumerated_feed`; binary bodies stay out of memory.
     pub analysis_status: String,
     pub detected_encoding: String,
     pub decode_errors: bool,
@@ -174,6 +175,19 @@ pub struct CrawlFailure {
 pub enum RequestKind {
     Page,
     Robots,
+    /// Explicitly designated sitemap or feed document requested for expansion.
+    Enumeration,
+}
+
+/// What a frontier entry describes. Enumeration entries expand into child
+/// pages (or nested sitemaps) instead of receiving HTML page analysis.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    #[default]
+    Page,
+    Sitemap,
+    Feed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +204,8 @@ pub struct CrawlStats {
     pub pages_fetched: usize,
     pub pages_analyzed: usize,
     pub pages_skipped: usize,
+    #[serde(default)]
+    pub pages_enumerated: usize,
     pub unfinished: usize,
     pub pages_crawled: usize,
     pub pages_failed: usize,

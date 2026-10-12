@@ -12,16 +12,23 @@ use url::Url;
 
 use crate::analyzer::{PageAnalyzer, PageInput, ReadabilitiesAnalyzer};
 use crate::budget::CrawlBudget;
-use crate::fetch::{HopOutcome, HopResponse, OneHopTransport, origin_key, safe_url, validate_url};
-use crate::frontier::normalize_url;
+use crate::enumeration;
+use crate::fetch::{
+    Conditional, HopOutcome, HopResponse, OneHopTransport, origin_key, safe_url, validate_url,
+};
+use crate::frontier::{FrontierValidators, normalize_url};
 use crate::robots::{RobotsRules, RobotsState};
 use crate::throttle::OriginScheduler;
 use crate::{
-    CrawlConfig, CrawlError, CrawlEvent, CrawlFailure, CrawlFailureDetail, CrawlOutcome, CrawlPage,
-    CrawlRecord, CrawlReport, CrawlSink, CrawlSinkError, CrawlStats, CrawlSummary, FailureKind,
-    Frontier, FrontierEntry, InMemoryFrontier, NullCrawlSink, PageAnalysis, PathMatchMode,
-    RedirectPolicy, RequestKind, Result, ScopeBoundary,
+    AnalyzedLink, CrawlConfig, CrawlError, CrawlEvent, CrawlFailure, CrawlFailureDetail,
+    CrawlOutcome, CrawlPage, CrawlRecord, CrawlReport, CrawlSink, CrawlSinkError, CrawlStats,
+    CrawlSummary, EntryKind, FailureKind, Frontier, FrontierEntry, InMemoryFrontier, NullCrawlSink,
+    PageAnalysis, PathMatchMode, RedirectPolicy, RequestKind, Result, ScopeBoundary,
 };
+
+/// The only non-2xx status an enumeration claim accepts: the server confirmed
+/// a conditional request was unchanged.
+const NOT_MODIFIED: u16 = 304;
 
 #[derive(Clone)]
 pub struct Crawler {
@@ -109,12 +116,16 @@ impl Crawler {
     }
 
     pub fn validate_seed(&self, seed: &Url) -> Result<()> {
+        self.validate_seed_kind(seed, "seed")
+    }
+
+    fn validate_seed_kind(&self, seed: &Url, label: &str) -> Result<()> {
         validate_url(seed, &self.config.network)?;
         let scope = ScopeContext::new(seed)?;
         if !in_scope(&self.config, &scope, seed) {
-            return Err(CrawlError::InvalidUrl(
-                "seed URL is excluded by the configured scope policy".to_string(),
-            ));
+            return Err(CrawlError::InvalidUrl(format!(
+                "{label} URL is excluded by the configured scope policy"
+            )));
         }
         if seed.as_str().len() > self.config.limits.max_url_length {
             return Err(CrawlError::ResourceBudget {
@@ -123,6 +134,67 @@ impl Crawler {
             });
         }
         Ok(())
+    }
+
+    /// Validate every designated enumeration seed exactly like the primary
+    /// seed: same network, scope, and URL-length gates, measured against the
+    /// primary seed's scope.
+    pub fn validate_enumeration_seeds(&self, seed: &Url) -> Result<()> {
+        let scope = ScopeContext::new(seed)?;
+        for (url, label) in self.enumeration_seeds() {
+            validate_url(&url, &self.config.network)?;
+            if !in_scope(&self.config, &scope, &url) {
+                return Err(CrawlError::InvalidUrl(format!(
+                    "{label} URL is excluded by the configured scope policy"
+                )));
+            }
+            if url.as_str().len() > self.config.limits.max_url_length {
+                return Err(CrawlError::ResourceBudget {
+                    resource: "url_length",
+                    limit: self.config.limits.max_url_length,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn enumeration_seeds(&self) -> Vec<(Url, &'static str)> {
+        let mut seeds: Vec<(Url, &'static str)> = self
+            .config
+            .enumeration
+            .sitemaps
+            .iter()
+            .map(|url| (url.clone(), "sitemap"))
+            .chain(
+                self.config
+                    .enumeration
+                    .feeds
+                    .iter()
+                    .map(|url| (url.clone(), "feed")),
+            )
+            .collect();
+        seeds.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        seeds.dedup_by(|a, b| a.0.as_str() == b.0.as_str());
+        seeds
+    }
+
+    /// The identity a durable frontier binds for this seed and policy. A
+    /// directory shared by a different seed, enumeration set, or policy is
+    /// rejected instead of silently merged.
+    pub fn frontier_identity(&self, seed: &Url) -> String {
+        let enumeration = self
+            .enumeration_seeds()
+            .into_iter()
+            .map(|(url, label)| format!("{label}:{}", normalize_url(&url)))
+            .collect::<Vec<_>>()
+            .join("|");
+        format!(
+            "xcrawl:v1:{}:{:?}:{:?}:{}:{enumeration}",
+            normalize_url(seed),
+            self.config.scope,
+            self.config.network,
+            self.config.traversal.max_depth
+        )
     }
 
     async fn run(
@@ -134,6 +206,7 @@ impl Crawler {
     ) -> Result<RunOutput> {
         self.config.validate()?;
         self.validate_seed(seed)?;
+        self.validate_enumeration_seeds(seed)?;
         let _output_lease = self
             .config
             .output
@@ -142,13 +215,7 @@ impl Crawler {
             .map(crate::resource::lock_output)
             .transpose()?;
         frontier
-            .bind_identity(&format!(
-                "xcrawl:v1:{}:{:?}:{:?}:{}",
-                normalize_url(seed),
-                self.config.scope,
-                self.config.network,
-                self.config.traversal.max_depth
-            ))
+            .bind_identity(&self.frontier_identity(seed))
             .await?;
         let started = Instant::now();
         let scope = Arc::new(ScopeContext::new(seed)?);
@@ -165,15 +232,28 @@ impl Crawler {
             budget: Arc::clone(&budget),
             robots: Arc::new(AsyncMutex::new(HashMap::new())),
             resources_seen: Arc::new(Mutex::new(HashMap::new())),
+            frontier: Arc::clone(&frontier),
             scope,
         });
 
-        let seed_result = frontier
-            .enqueue_if_new(vec![FrontierEntry {
-                url: seed.clone(),
+        // Enumeration seeds join the primary seed at depth zero; their
+        // children flow through the same scope, robots, and budget gates.
+        let mut initial = vec![FrontierEntry {
+            url: seed.clone(),
+            depth: 0,
+            kind: EntryKind::Page,
+        }];
+        for (url, label) in self.enumeration_seeds() {
+            initial.push(FrontierEntry {
+                url,
                 depth: 0,
-            }])
-            .await?;
+                kind: match label {
+                    "feed" => EntryKind::Feed,
+                    _ => EntryKind::Sitemap,
+                },
+            });
+        }
+        let seed_result = frontier.enqueue_if_new(initial).await?;
         if seed_result.rejected_capacity > 0 {
             return Err(CrawlError::ResourceBudget {
                 resource: "frontier_entries",
@@ -312,6 +392,9 @@ impl Crawler {
                     if page.analysis_status == "analyzed" {
                         report.stats.pages_crawled += 1;
                         report.stats.pages_analyzed += 1;
+                    } else if page.analysis_status.starts_with("enumerated") {
+                        report.stats.pages_crawled += 1;
+                        report.stats.pages_enumerated += 1;
                     } else {
                         report.stats.pages_skipped += 1;
                     }
@@ -517,6 +600,7 @@ impl Crawler {
                 candidates.push(FrontierEntry {
                     url: link.url.clone(),
                     depth: success.entry.depth + 1,
+                    kind: success.child_kind,
                 });
             }
         }
@@ -572,17 +656,17 @@ impl Crawler {
                 error.message = "page analysis failed; see kind and stage".to_string();
             }
         }
+        let enumeration_entry = success.entry.kind != EntryKind::Page;
+        let decodable = crate::fetch::is_decodable_content_type(
+            success.response.headers.content_type.as_deref(),
+        );
         let page = CrawlPage {
             snapshot: self
                 .config
                 .output
                 .private_directory
                 .as_ref()
-                .filter(|_| {
-                    crate::fetch::is_decodable_content_type(
-                        success.response.headers.content_type.as_deref(),
-                    )
-                })
+                .filter(|_| enumeration_entry || decodable)
                 .map(|_| {
                     format!(
                         "snapshots/{}.body",
@@ -602,9 +686,13 @@ impl Crawler {
                 .collect(),
             depth: success.entry.depth,
             status: success.response.status,
-            analysis_status: if crate::fetch::is_decodable_content_type(
-                success.response.headers.content_type.as_deref(),
-            ) {
+            analysis_status: if enumeration_entry {
+                match success.entry.kind {
+                    EntryKind::Sitemap => "enumerated_sitemap",
+                    EntryKind::Feed => "enumerated_feed",
+                    EntryKind::Page => "analyzed",
+                }
+            } else if decodable {
                 "analyzed"
             } else {
                 "skipped_unsupported_content_type"
@@ -642,6 +730,7 @@ struct CrawlRuntime {
     budget: Arc<CrawlBudget>,
     robots: Arc<AsyncMutex<HashMap<String, Arc<OnceCell<CachedRobots>>>>>,
     resources_seen: Arc<Mutex<HashMap<String, usize>>>,
+    frontier: Arc<dyn Frontier>,
     scope: Arc<ScopeContext>,
 }
 
@@ -660,10 +749,40 @@ impl CrawlRuntime {
                 events: Vec::new(),
             };
         }
-        let fetched = match self.fetch_page(&entry).await {
+        let conditional = if entry.kind == EntryKind::Page {
+            None
+        } else {
+            match self.frontier.validators(&entry.url).await {
+                Ok(validators) => validators,
+                Err(error) => {
+                    return PageTask::Failure(TaskFailure {
+                        entry,
+                        error,
+                        attempts: 0,
+                        redirect_chain: Vec::new(),
+                        events: Vec::new(),
+                    });
+                }
+            }
+        };
+        let conditional_headers = conditional.as_ref().map(|validators| Conditional {
+            if_none_match: validators.etag.as_deref(),
+            if_modified_since: validators.last_modified.as_deref(),
+        });
+        let fetched = match self
+            .fetch_page(
+                &entry,
+                enumeration::request_kind(entry.kind),
+                conditional_headers,
+            )
+            .await
+        {
             Ok(fetched) => fetched,
             Err(failure) => return PageTask::Failure(failure),
         };
+        if entry.kind != EntryKind::Page {
+            return self.enumeration_task(entry, fetched).await;
+        }
         let resource_key = normalize_url(&fetched.response.url);
         let duplicate = {
             let mut seen = self
@@ -762,11 +881,181 @@ impl CrawlRuntime {
             analysis,
             scope: Arc::clone(&self.scope),
             enqueued: Vec::new(),
+            child_kind: EntryKind::Page,
         }))
     }
 
+    /// Expand a designated sitemap or feed document. The raw body (including
+    /// gzip-wrapped files) is snapshotted and its validators persisted before
+    /// expansion, so a crash resumes with a conditional request and can
+    /// re-expand from the snapshot on 304 without re-downloading anything.
+    async fn enumeration_task(&self, entry: FrontierEntry, fetched: Fetched) -> PageTask {
+        let kind = entry.kind;
+        let mut fetched = fetched;
+        if fetched.response.status == NOT_MODIFIED
+            && let Err(error) = self.reuse_snapshot(&mut fetched)
+        {
+            // Without the retained body the document cannot be re-expanded;
+            // fall back to exactly one unconditional request.
+            tracing::debug!(url = %safe_url(&entry.url), %error, "conditional refetch");
+            match self
+                .fetch_page(&entry, RequestKind::Enumeration, None)
+                .await
+            {
+                Ok(refetched) => fetched = refetched,
+                Err(failure) => return PageTask::Failure(failure),
+            }
+        }
+        let body = std::mem::take(&mut fetched.response.body);
+        let body_bytes = body.len();
+        let validators = FrontierValidators {
+            etag: fetched.response.headers.etag.clone(),
+            last_modified: fetched.response.headers.last_modified.clone(),
+        };
+        // Persist the raw body and validators before expansion: a crash here
+        // resumes with a conditional request and the retained snapshot.
+        if let Some(directory) = self.config.output.private_directory.as_ref() {
+            let snapshot_id = crate::resource::identity(&fetched.response.url, "snapshot");
+            if let Err(error) = crate::resource::atomic_private(
+                &directory
+                    .join("snapshots")
+                    .join(format!("{snapshot_id}.body")),
+                &body,
+            ) {
+                return PageTask::Failure(TaskFailure {
+                    entry,
+                    error,
+                    attempts: fetched.attempts,
+                    redirect_chain: fetched.redirect_chain,
+                    events: fetched.events,
+                });
+            }
+            if !validators.is_empty()
+                && let Err(error) = self
+                    .frontier
+                    .store_validators(&entry.url, &validators)
+                    .await
+            {
+                return PageTask::Failure(TaskFailure {
+                    entry,
+                    error,
+                    attempts: fetched.attempts,
+                    redirect_chain: fetched.redirect_chain,
+                    events: fetched.events,
+                });
+            }
+        }
+        let document = match enumeration::parse_document(
+            kind,
+            &fetched.response.url,
+            &body,
+            self.config.traversal.max_links_to_analyze,
+        ) {
+            Ok(document) => document,
+            Err(error) => {
+                return PageTask::Failure(TaskFailure {
+                    entry,
+                    error,
+                    attempts: fetched.attempts,
+                    redirect_chain: fetched.redirect_chain,
+                    events: fetched.events,
+                });
+            }
+        };
+        let child_kind = document
+            .children
+            .first()
+            .map_or(EntryKind::Page, |child| child.kind);
+        let links_discovered = document.total_discovered;
+        let links = document
+            .children
+            .into_iter()
+            .map(|child| AnalyzedLink {
+                url: child.url,
+                text: child.title,
+                rel: Vec::new(),
+                nofollow: false,
+            })
+            .collect();
+        let analysis = PageAnalysis {
+            links,
+            links_discovered,
+            detected_encoding: "utf-8".to_string(),
+            ..PageAnalysis::default()
+        };
+        PageTask::Success(Box::new(PageSuccess {
+            entry,
+            response: HopResponse {
+                body: Vec::new(),
+                ..fetched.response
+            },
+            body_bytes,
+            redirect_chain: fetched.redirect_chain,
+            events: fetched.events,
+            analysis,
+            scope: Arc::clone(&self.scope),
+            enqueued: Vec::new(),
+            child_kind,
+        }))
+    }
+
+    /// Load the retained snapshot for a 304 response. The server confirmed the
+    /// document is unchanged, so the stored bytes are exactly what a 200 would
+    /// have returned.
+    fn reuse_snapshot(&self, fetched: &mut Fetched) -> Result<()> {
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
+        let Some(directory) = self.config.output.private_directory.as_ref() else {
+            return Err(CrawlError::Output(
+                "no private output directory retained the document".to_string(),
+            ));
+        };
+        let path = directory.join("snapshots").join(format!(
+            "{}.body",
+            crate::resource::identity(&fetched.response.url, "snapshot")
+        ));
+        let file = std::fs::File::from(
+            rustix::fs::open(
+                &path,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::NONBLOCK,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|error| {
+                CrawlError::Output(format!(
+                    "snapshot for an unchanged document is unavailable: {error}"
+                ))
+            })?,
+        );
+        let metadata = file
+            .metadata()
+            .map_err(|error| CrawlError::Output(error.to_string()))?;
+        if !metadata.is_file() || metadata.size() > self.config.limits.max_response_bytes as u64 {
+            return Err(CrawlError::Output(
+                "snapshot for an unchanged document is missing or oversized".to_string(),
+            ));
+        }
+        let mut body = Vec::new();
+        file.take(self.config.limits.max_response_bytes as u64 + 1)
+            .read_to_end(&mut body)
+            .map_err(|error| CrawlError::Output(error.to_string()))?;
+        if body.len() > self.config.limits.max_response_bytes {
+            return Err(CrawlError::Output(
+                "snapshot for an unchanged document exceeds the response limit".to_string(),
+            ));
+        }
+        fetched.response.body = body;
+        Ok(())
+    }
+
     #[allow(clippy::result_large_err)] // Error retains bounded request provenance for the report.
-    async fn fetch_page(&self, entry: &FrontierEntry) -> std::result::Result<Fetched, TaskFailure> {
+    async fn fetch_page(
+        &self,
+        entry: &FrontierEntry,
+        kind: RequestKind,
+        conditional: Option<Conditional<'_>>,
+    ) -> std::result::Result<Fetched, TaskFailure> {
         let mut current = entry.url.clone();
         let initial_origin = origin_key(&current);
         let mut redirects = Vec::new();
@@ -803,8 +1092,9 @@ impl CrawlRuntime {
             let attempt = self
                 .send_with_retries(
                     &current,
-                    RequestKind::Page,
+                    kind,
                     self.config.limits.max_response_bytes,
+                    conditional,
                 )
                 .await;
             let (outcome, used_attempts, mut attempt_events) = match attempt {
@@ -825,6 +1115,20 @@ impl CrawlRuntime {
             events.append(&mut attempt_events);
             match outcome {
                 HopOutcome::Response(response) if (200..300).contains(&response.status) => {
+                    return Ok(Fetched {
+                        response,
+                        attempts,
+                        redirect_chain: redirects,
+                        events,
+                    });
+                }
+                // A conditional enumeration request the server answered with
+                // "not modified": the retained snapshot stands in for the body.
+                HopOutcome::Response(response)
+                    if response.status == NOT_MODIFIED
+                        && kind == RequestKind::Enumeration
+                        && conditional.is_some() =>
+                {
                     return Ok(Fetched {
                         response,
                         attempts,
@@ -974,6 +1278,7 @@ impl CrawlRuntime {
                     &current,
                     RequestKind::Robots,
                     self.config.limits.max_robots_bytes,
+                    None,
                 )
                 .await;
             let (outcome, _, mut attempt_events) = match attempt {
@@ -1068,6 +1373,7 @@ impl CrawlRuntime {
         url: &Url,
         kind: RequestKind,
         max_body_bytes: usize,
+        conditional: Option<Conditional<'_>>,
     ) -> std::result::Result<(HopOutcome, u8, Vec<CrawlEvent>), AttemptFailure> {
         let origin = origin_key(url);
         let mut events = Vec::new();
@@ -1094,7 +1400,7 @@ impl CrawlRuntime {
             let result = tokio::time::timeout(
                 timeout,
                 self.transport
-                    .send_one_hop(url, kind, max_body_bytes, &self.budget),
+                    .send_one_hop(url, kind, max_body_bytes, &self.budget, conditional),
             )
             .await
             .map_err(|_| CrawlError::AttemptTimeout)
@@ -1207,6 +1513,10 @@ struct PageSuccess {
     analysis: PageAnalysis,
     scope: Arc<ScopeContext>,
     enqueued: Vec<FrontierEntry>,
+    /// The frontier kind this document's discovered links enqueue as. A
+    /// sitemap index discovers further sitemaps; everything else discovers
+    /// pages.
+    child_kind: EntryKind,
 }
 
 struct ProcessedPage {

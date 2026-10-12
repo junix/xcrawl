@@ -12,8 +12,9 @@ use fs2::FileExt;
 use rustix::fs::{AtFlags, Mode, OFlags, open, openat, renameat, unlinkat};
 use serde::{Deserialize, Serialize};
 
-use crate::frontier::normalize_url;
+use crate::frontier::{FrontierValidators, normalize_url};
 use crate::{CrawlError, EnqueueResult, Frontier, FrontierEntry, Result};
+use url::Url;
 
 /// Single-owner durable frontier. The lock excludes concurrent writers; claims
 /// survive crashes and are recovered when the next owner opens the directory.
@@ -31,6 +32,10 @@ struct State {
     identity: Option<String>,
     items: HashMap<String, Item>,
     queue: VecDeque<String>,
+    /// Conditional-fetch validators for enumeration documents, keyed by the
+    /// normalized entry URL. Older checkpoints decode without them.
+    #[serde(default)]
+    validators: HashMap<String, FrontierValidators>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -312,6 +317,25 @@ impl Frontier for DurableFrontier {
                 item.done = item.entry.depth == entry.depth;
             }
             Ok(enqueue(state, children, self.capacity))
+        })
+    }
+    async fn validators(&self, url: &Url) -> Result<Option<FrontierValidators>> {
+        let key = normalize_url(url);
+        let guard = self.state.lock().map_err(failure)?;
+        Ok(guard.validators.get(&key).cloned())
+    }
+    async fn store_validators(&self, url: &Url, validators: &FrontierValidators) -> Result<()> {
+        if validators.is_empty() {
+            return Ok(());
+        }
+        let key = normalize_url(url);
+        self.transaction(|state| {
+            // Validators are only retained for admitted entries, so the table
+            // never exceeds the frontier's own capacity.
+            if state.items.contains_key(&key) {
+                state.validators.insert(key, validators.clone());
+            }
+            Ok(())
         })
     }
     async fn release_claims(&self) -> Result<()> {

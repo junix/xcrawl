@@ -64,6 +64,16 @@ pub(crate) struct ResponseHeaders {
     pub(crate) values: BTreeMap<String, String>,
     pub(crate) content_type: Option<String>,
     pub(crate) retry_after: Option<Duration>,
+    /// Strong or weak entity tag retained for conditional enumeration refetch.
+    pub(crate) etag: Option<String>,
+    pub(crate) last_modified: Option<String>,
+}
+
+/// Conditional request headers for a recovered enumeration claim.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Conditional<'a> {
+    pub(crate) if_none_match: Option<&'a str>,
+    pub(crate) if_modified_since: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,14 +124,22 @@ impl OneHopTransport {
         kind: RequestKind,
         max_body_bytes: usize,
         budget: &CrawlBudget,
+        conditional: Option<Conditional<'_>>,
     ) -> Result<HopOutcome> {
         validate_url(url, &self.network.policy)?;
         if let Some(ip) = literal_ip(url) {
             self.network.validate_ip(ip)?;
         }
-        let response = self
-            .client
-            .get(url.clone())
+        let mut request = self.client.get(url.clone());
+        if let Some(conditional) = conditional {
+            if let Some(value) = conditional.if_none_match {
+                request = request.header(reqwest::header::IF_NONE_MATCH, value);
+            }
+            if let Some(value) = conditional.if_modified_since {
+                request = request.header(reqwest::header::IF_MODIFIED_SINCE, value);
+            }
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| map_reqwest_error(&error))?;
@@ -153,7 +171,9 @@ impl OneHopTransport {
         // omits Content-Type entirely — is skipped at zero download cost; the
         // empty body flows on to the analyzer, which reports `unsupported`.
         // Robots fetches are control-plane: their rules must parse regardless
-        // of the advertised type, so they are exempt.
+        // of the advertised type, so they are exempt. Enumeration documents
+        // are explicit operator designations, including gzip-wrapped sitemaps,
+        // and stay bounded by the ordinary response byte limit.
         if kind == RequestKind::Page && !is_decodable_content_type(headers.content_type.as_deref())
         {
             return Ok(HopOutcome::Response(HopResponse {
@@ -403,11 +423,34 @@ fn response_headers(headers: &reqwest::header::HeaderMap) -> ResponseHeaders {
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(parse_retry_after);
+    let etag = headers
+        .get(reqwest::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .and_then(validator_value);
+    let last_modified = headers
+        .get(reqwest::header::LAST_MODIFIED)
+        .and_then(|value| value.to_str().ok())
+        .and_then(validator_value);
     ResponseHeaders {
         values,
         content_type,
         retry_after,
+        etag,
+        last_modified,
     }
+}
+
+/// Keep a bounded, control-character-free validator value. Anything else is
+/// dropped rather than echoed back into a request header.
+fn validator_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 512
+        || trimmed.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 fn parse_retry_after(value: &str) -> Option<Duration> {

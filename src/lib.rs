@@ -9,6 +9,7 @@ mod budget;
 mod config;
 mod crawler;
 mod durable_frontier;
+mod enumeration;
 mod error;
 mod fetch;
 mod frontier;
@@ -19,20 +20,20 @@ mod throttle;
 
 pub use analyzer::{PageAnalyzer, PageInput, ReadabilitiesAnalyzer};
 pub use config::{
-    CrawlConfig, CrawlStrategy, NetworkPolicy, OutputPolicy, PathMatchMode, PortPolicy,
-    RedirectPolicy, ResourceLimits, RetryPolicy, RobotsPolicy, ScopeBoundary, ScopePolicy,
-    TraversalPolicy,
+    CrawlConfig, CrawlStrategy, EnumerationPolicy, NetworkPolicy, OutputPolicy, PathMatchMode,
+    PortPolicy, RedirectPolicy, ResourceLimits, RetryPolicy, RobotsPolicy, ScopeBoundary,
+    ScopePolicy, TraversalPolicy,
 };
 pub use crawler::Crawler;
 pub use durable_frontier::DurableFrontier;
 pub use error::{CrawlError, Result};
 pub use fetch::safe_url;
-pub use frontier::{EnqueueResult, Frontier, FrontierEntry, InMemoryFrontier};
+pub use frontier::{EnqueueResult, Frontier, FrontierEntry, FrontierValidators, InMemoryFrontier};
 pub use model::{
     AnalysisError, AnalysisWarning, AnalyzedArticle, AnalyzedLink, ArticleMetadata,
     ArticleProvenance, ArticleSignals, CrawlEvent, CrawlFailure, CrawlFailureDetail, CrawlOutcome,
     CrawlPage, CrawlRecord, CrawlReport, CrawlSink, CrawlSinkError, CrawlStats, CrawlSummary,
-    FailureKind, NullCrawlSink, PageAnalysis, PageRobots, RequestKind, RobotsDecision,
+    EntryKind, FailureKind, NullCrawlSink, PageAnalysis, PageRobots, RequestKind, RobotsDecision,
 };
 pub use resource::ResourceCandidate;
 pub use robots::{RobotsRules, RobotsState};
