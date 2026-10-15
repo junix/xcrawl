@@ -132,3 +132,105 @@ proptest! {
         let _ = rules.allowed("xcrawl", "/path?q=1");
     }
 }
+
+/// Reference implementation (the previous greedy-with-backtrack matcher);
+/// kept only to cross-check the linear matcher on small inputs.
+fn reference_matches(path: &str, rule: &str) -> bool {
+    fn wildcard_match(value: &[u8], pattern: &[u8]) -> bool {
+        let (mut value_index, mut pattern_index) = (0, 0);
+        let (mut star_index, mut star_value_index) = (None, 0);
+        while value_index < value.len() {
+            if pattern_index < pattern.len()
+                && pattern[pattern_index] != b'*'
+                && pattern[pattern_index] == value[value_index]
+            {
+                value_index += 1;
+                pattern_index += 1;
+            } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+                star_index = Some(pattern_index);
+                pattern_index += 1;
+                star_value_index = value_index;
+            } else if let Some(star) = star_index {
+                star_value_index += 1;
+                value_index = star_value_index;
+                pattern_index = star + 1;
+            } else {
+                return false;
+            }
+        }
+        pattern[pattern_index..].iter().all(|byte| *byte == b'*')
+    }
+    let (pattern, exact_end) = rule
+        .strip_suffix('$')
+        .map_or((rule, false), |pattern| (pattern, true));
+    let mut pattern = pattern.as_bytes().to_vec();
+    if !exact_end {
+        pattern.push(b'*');
+    }
+    wildcard_match(path.as_bytes(), &pattern)
+}
+
+#[test]
+fn wildcard_edge_cases_match_rfc_semantics() {
+    for (path, rule, expected) in [
+        ("/anything", "*", true),
+        ("/a/b", "/a*", true),
+        ("/a", "/a$", true),
+        ("/ab", "/a$", false),
+        ("/a/b/c", "/a/*/c", true),
+        ("/a/c", "/a/*/c", false),
+        ("/fish.php", "/*.php$", true),
+        ("/fish.php?x", "/*.php$", false),
+        ("/abab", "*ab*ab$", true),
+        ("/aba", "*ab*ab$", false),
+        ("/aab", "*aab$", true),
+        ("/x", "", true),
+        ("/x", "$", false),
+        ("/", "/$", true),
+        ("/ab", "/a*b$", true),
+        ("/ab", "/ab*b$", false),
+    ] {
+        assert_eq!(
+            robots_path_matches(path, rule),
+            expected,
+            "{path} vs {rule}"
+        );
+    }
+}
+
+#[test]
+fn adversarial_patterns_complete_in_linear_work() {
+    // 1 MiB a-only path against a rule that forced a full suffix rescan at
+    // every position under the old matcher (O(path x rule) ~ 5e9 steps).
+    let path = format!("/{}", "a".repeat(1 << 20));
+    let rule = format!("*{}b$", "a".repeat(5000));
+    let started = std::time::Instant::now();
+    assert!(!robots_path_matches(&path, &rule));
+    let many_stars = format!("{}b", "*a".repeat(2000));
+    assert!(!robots_path_matches(&path, &many_stars));
+    assert!(robots_path_matches(
+        &path,
+        &format!("{}$", "*a".repeat(2000))
+    ));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "matching took {:?}",
+        started.elapsed()
+    );
+    // And the public API stays correct with such a rule present.
+    let rules = RobotsRules::parse(&format!(
+        "User-agent: *\nDisallow: {rule}\nDisallow: /private\n"
+    ));
+    assert!(rules.allowed("xcrawl", &path));
+    assert!(!rules.allowed("xcrawl", "/private/x"));
+}
+
+proptest! {
+    #[test]
+    fn linear_matcher_agrees_with_reference(
+        path in "[ab/%?]{0,24}",
+        rule in "[ab/*$%?]{0,12}",
+    ) {
+        prop_assert_eq!(robots_path_matches(&path, &rule), reference_matches(&path, &rule));
+    }
+}

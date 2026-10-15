@@ -196,40 +196,40 @@ fn parse_request_rate(value: &str, max_delay: Duration) -> Option<Duration> {
     parse_delay(&(seconds / requests).to_string(), max_delay)
 }
 
+/// RFC 9309 rule matching: `*` matches any run of characters, a trailing `$`
+/// anchors the end, and a rule without `$` matches any path it prefixes.
+///
+/// The pattern is split on `*` into literal segments that are located
+/// leftmost-first (the first segment anchored at the start, the last at the end
+/// when `$` is present). Leftmost placement of each segment is optimal for
+/// star-only globs, so no backtracking is needed and each segment search is a
+/// linear-time `str::find`: total work is O(path + rule) regardless of how
+/// adversarial the rule is (e.g. `*aaaaab$` against a long a-only path).
 fn robots_path_matches(path: &str, rule: &str) -> bool {
     let (pattern, exact_end) = rule
         .strip_suffix('$')
         .map_or((rule, false), |pattern| (pattern, true));
-    let mut pattern = pattern.as_bytes().to_vec();
-    if !exact_end {
-        pattern.push(b'*');
-    }
-    wildcard_match(path.as_bytes(), &pattern)
-}
-
-fn wildcard_match(value: &[u8], pattern: &[u8]) -> bool {
-    let (mut value_index, mut pattern_index) = (0, 0);
-    let (mut star_index, mut star_value_index) = (None, 0);
-    while value_index < value.len() {
-        if pattern_index < pattern.len()
-            && pattern[pattern_index] != b'*'
-            && pattern[pattern_index] == value[value_index]
-        {
-            value_index += 1;
-            pattern_index += 1;
-        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
-            star_index = Some(pattern_index);
-            pattern_index += 1;
-            star_value_index = value_index;
-        } else if let Some(star) = star_index {
-            star_value_index += 1;
-            value_index = star_value_index;
-            pattern_index = star + 1;
-        } else {
-            return false;
+    let mut segments = pattern.split('*');
+    let first = segments.next().unwrap_or("");
+    let Some(mut rest) = path.strip_prefix(first) else {
+        return false;
+    };
+    let mut remaining: Vec<&str> = segments.collect();
+    let Some(last) = remaining.pop() else {
+        // No `*`: literal prefix (or the whole path with `$`).
+        return !exact_end || rest.is_empty();
+    };
+    for segment in remaining {
+        match rest.find(segment) {
+            Some(index) => rest = &rest[index + segment.len()..],
+            None => return false,
         }
     }
-    pattern[pattern_index..].iter().all(|byte| *byte == b'*')
+    if exact_end {
+        rest.ends_with(last)
+    } else {
+        rest.contains(last)
+    }
 }
 
 /// Normalize URI octets according to RFC 9309 section 2.2.2. Percent-encoded
